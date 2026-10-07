@@ -22,9 +22,12 @@
 **电脑端插件：[`slinxiaosun-blip/dsh-ai-passport-plugin`](https://github.com/slinxiaosun-blip/dsh-ai-passport-plugin)**
 
 它负责蓝牙链路、任务桥接、语音识别与桌面挂件。安装方式：把该仓库 clone 到本地，
-运行其中的 `tools/install-plugin-to-dsh.sh`，详见该仓库 README 的「快速开始」。
+运行其中的 `npm run install-plugin`（macOS / Windows 同一命令，安装器自动适配两个平台），
+详见该仓库 README 的「快速开始」。
 
-固件与插件之间的通信协议版本必须匹配（当前协议 v1）。
+固件与插件之间的通信协议版本必须匹配（当前协议 v1）。固件**不区分主机平台**：
+同一份镜像对 macOS 与 Windows 的 DSH 客户端通用，一次烧录即可（设备只做 BLE 外设，
+分片按协商 MTU 动态计算，配对走应用层配对码，均与主机操作系统无关）。
 
 ## 下载固件（不用自己编译）
 
@@ -32,7 +35,11 @@
 下载 `FoloToy-AI-Passport-full.bin` 即可，它可以从 `0x0` 一次性刷入：
 
 ```bash
+# macOS / Linux（串口形如 /dev/cu.usbserial-XXXX 或 /dev/cu.wchusbserial-XXXX）
 esptool.py -p /dev/cu.usbserial-XXXX write_flash 0x0 FoloToy-AI-Passport-full.bin
+
+# Windows（串口形如 COM5，设备管理器里可查）
+esptool.py -p COM5 write_flash 0x0 FoloToy-AI-Passport-full.bin
 ```
 
 刷写会覆盖设备原有固件，且不保证保留已有设置。**刷之前先记下当前固件版本**，
@@ -55,7 +62,11 @@ esptool.py -p /dev/cu.usbserial-XXXX write_flash 0x0 FoloToy-AI-Passport-full.bi
 刷写（会覆盖设备原有固件）：
 
 ```bash
+# macOS / Linux
 esptool.py -p /dev/cu.usbserial-XXXX write_flash 0x0 build/FoloToy-AI-Passport-full.bin
+
+# Windows
+esptool.py -p COM5 write_flash 0x0 build/FoloToy-AI-Passport-full.bin
 ```
 
 想恢复官方固件，用 [AI Passport 刷机工具](https://ai-passport.folotoy.cn/tools/web-flasher/)。构建环境准备、常见偏差处理、插件安装与语音模型启用，见插件仓库的
@@ -63,8 +74,12 @@ esptool.py -p /dev/cu.usbserial-XXXX write_flash 0x0 build/FoloToy-AI-Passport-f
 
 ## 版本
 
-固件版本由 `version.txt` 提供基底（当前 `1.0.0`），构建时自动追加 git 短哈希，
-例如 `1.0.0+g0b9e4c8-dirty`。这个串会随握手上报给电脑端，挂件信息格里显示的就是设备真实版本。
+固件版本由 `version.txt` 提供基底（当前 `1.1.0`），构建时自动追加 git 短哈希，
+例如 `1.1.0+g1a2b3c4-dirty`。这个串会随握手上报给电脑端，挂件信息格里显示的就是设备真实版本。
+
+- `1.1.0` —— 与插件 1.1.0 同步发布（插件侧适配 macOS / Windows 双 DSH 客户端）；
+  固件行为与 `1.0.0` 完全一致，此版本仅做版本对齐，一次烧录两端通用。
+- `1.0.0` —— 首个完整版本（任务台/审批/余额/语音/配对）。
 
 ## 来源与许可
 

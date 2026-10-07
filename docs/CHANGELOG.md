@@ -12,6 +12,28 @@
 
 ## Unreleased
 
+## v1.1.0-dsh-passport - 2026-10-07
+
+- Released firmware `1.1.0`. On-device behavior is identical to `1.0.0`; the version
+  number is aligned with the companion plugin 1.1.0 line so the widget shows matching
+  versions on both ends.
+- Compatibility: one firmware image works with both the macOS and Windows DSH clients.
+  The device is a pure BLE peripheral — chunking follows the negotiated MTU and pairing
+  uses an application-level code — so nothing depends on the host operating system. The
+  companion plugin 1.1.0 adapts installation and runtime to both client platforms.
+- Documented the dual-client compatibility statement and Windows (COM port) flashing
+  commands in the root README, and restructured the root README into the repository
+  language policy (English default with a paired Simplified Chinese file).
+- Release flow: application release tags follow the `v<version>-<app-name>` convention
+  (`v1.1.0-dsh-passport`), keeping the release list scannable by application.
+
+## v1.0.0 - 2026-10-07
+
+> Recorded retroactively while preparing the `v1.1.0-dsh-passport` release: the entries
+> below describe the base tree (upstream `main @ 0b9e4c8` plus the repository
+> engineering merged into it) that shipped with `v1.0.0`. They stayed under `Unreleased`
+> because v1.0.0 was published without a changelog pass.
+
 - Added the supplied 80-byte CW2017 profile for the specified 520 mAh cell, including content/update-flag checks, verified writes, the required restart sequence, and bounded SOC-readiness polling.
 
 - Expanded the environment bootstrap document: added Espressif's Git service mirror (`git.espressif.com.cn`) as the preferred mainland-China route for ESP-IDF v5.5.3 and its submodules, documented submodule long-wait/timeout handling, in-place repair, and the pinned-commit shallow fetch for large submodules such as `esp32-wifi-lib`, warned about stale per-repository Jihulab `insteadOf` residue, and added the official offline release archive as a last-resort fallback (learned from `esp-mosaico/esp-mosaico-vibe`).

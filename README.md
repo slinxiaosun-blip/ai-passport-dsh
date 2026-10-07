@@ -69,7 +69,8 @@ esptool.py -p /dev/cu.usbserial-XXXX write_flash 0x0 build/FoloToy-AI-Passport-f
 ## 来源与许可
 
 本仓库基于上游 [FoloToy/ai-passport](https://github.com/FoloToy/ai-passport)
-`main @ 0b9e4c8`（MIT）二次开发，全部改动集中在 `feature/dsh-passport` 分支：
+`main @ 0b9e4c8`（MIT）二次开发（作者 [slinxiaosun-blip](https://github.com/slinxiaosun-blip)），
+全部改动集中在 `feature/dsh-passport` 分支：
 
 - **新增**：`main/app_*.c/.h` 设备应用（蓝牙链路、任务台、审批、问答、语音、配对、设置）
 - **侵入式改动**：`components/bsp` 四处、`main/CMakeLists.txt`、`main/main.c`、

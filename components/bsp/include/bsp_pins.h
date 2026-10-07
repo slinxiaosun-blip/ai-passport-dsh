@@ -52,6 +52,8 @@
 // ============================================================================
 #define BSP_BTN_ADC_UNIT     ADC_UNIT_1
 #define BSP_BTN_ADC_CHANNEL  ADC_CHANNEL_0    // GPIO0
+// 三个按键共用的分压节点引脚号：深睡唤醒也用它（按下即把节点拉低）
+#define BSP_BTN_ADC_GPIO     0
 #define BSP_BTN_COUNT        3
 
 // 按键判定时序(ms):由 BSP 显式下发给 button 组件,不依赖它的 Kconfig 默认值。

@@ -29,9 +29,53 @@ run_static_checks() {
         -o "${test_dir}/test_ui_pixel_math"
     "${test_dir}/test_ui_pixel_math"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_utf8_clamp.c main/utf8_clamp.c \
+        -o "${test_dir}/test_utf8_clamp"
+    "${test_dir}/test_utf8_clamp"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_question_logic.c main/app_question_logic.c \
+        -o "${test_dir}/test_question_logic"
+    "${test_dir}/test_question_logic"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_conn_logic.c main/app_conn_logic.c \
+        -o "${test_dir}/test_conn_logic"
+    "${test_dir}/test_conn_logic"
+    # 配对纯逻辑（阶段 C）：6 位码派生、常量时间比较、失败限流
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_pair_logic.c main/app_pair_logic.c \
+        -o "${test_dir}/test_pair_logic"
+    "${test_dir}/test_pair_logic"
+    # 系统设置纯逻辑（阶段 B）：菜单表、取值映射、档位循环、空闲关机判定
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_settings_logic.c main/app_settings_logic.c \
+        -o "${test_dir}/test_settings_logic"
+    "${test_dir}/test_settings_logic"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_demo_navigation.c main/demo_navigation.c \
         -o "${test_dir}/test_demo_navigation"
     "${test_dir}/test_demo_navigation"
+    # 界面中文字体覆盖检查（AI Passport × DSH 联机应用）。
+    # 这是**真机上踩过的坑**：LVGL 内置的 CJK 子集不覆盖本应用文案，
+    # 48 个中文字里缺 23 个，那些位置显示成方框。字体子集从源码字面量自动提取，
+    # 但若改了文案却忘了重新生成，就又会缺字 —— 而这个错误只有在真机上才看得见。
+    # 放进静态门禁，让它在提交前就失败。
+    #
+    # 脚本在**外层项目**的 tools/ 下（本仓库被当作 vendor 使用时才有），
+    # 相对本仓库根是 ../../tools/。独立 clone 本仓库时它不存在，跳过即可 ——
+    # 上游仓库不该因为我们加的应用而多出一条硬依赖。
+    font_script="${repo_root}/../../tools/make-fonts.py"
+    if [[ -f "${font_script}" ]]; then
+        python3 "${font_script}" --check
+    fi
+
+    # AI Passport × DSH 联机应用的协议逻辑测试。
+    # 它是纯 C（不依赖 ESP-IDF/NimBLE/LVGL），因此能和其它 host 测试一样直接编译运行。
+    # 分片边界、乱序、重复片、ACK 重传这些逻辑错了也能编译通过、也能跑起来，
+    # 只在真机上表现为"偶发"——放到这里跑是毫秒级反馈。
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_app_proto.c main/app_proto.c \
+        -o "${test_dir}/test_app_proto"
+    "${test_dir}/test_app_proto"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/bsp/src \
         tests/test_bsp_display_rounding.c components/bsp/src/bsp_display_rounding.c \
         -o "${test_dir}/test_bsp_display_rounding"
@@ -54,14 +98,24 @@ run_static_checks() {
         tests/test_bsp_audio_recovery.c components/bsp/src/bsp_es8311_sleep_check.c \
         -o "${test_dir}/test_bsp_audio_recovery"
     "${test_dir}/test_bsp_audio_recovery"
+    # Apple ld（macOS）不认识 GNU ld 的 --gc-sections，等价参数是 -dead_strip。
+    local dead_strip_flag="-Wl,--gc-sections"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        dead_strip_flag="-Wl,-dead_strip"
+    fi
     for demo in audio low_power ble wifi; do
         "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
             -ffunction-sections -fdata-sections -Itests/demo_stubs -Imain \
-            "tests/test_demo_${demo}_runtime.c" -Wl,--gc-sections \
+            "tests/test_demo_${demo}_runtime.c" "${dead_strip_flag}" \
             -o "${test_dir}/test_demo_${demo}_runtime"
         "${test_dir}/test_demo_${demo}_runtime"
     done
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_deep_sleep_contract.py
+    # LVGL 任务归属契约：跑在 app_task / 链路回调里的入口不许碰 LVGL。
+    # 真机上踩过：识别结果回调直接调 show_panel/refresh_*，与 LVGL 任务并发访问
+    # 导致内部链表损坏、lv_inv_area 死循环、整机冻死（只告警不复位）。
+    # 这个错误编译通过与常规测试都发现不了，只有真机会冻死 —— 放进静态门禁。
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_lvgl_task_contract.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_check_repo.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_verify_firmware.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_archive_firmware.py

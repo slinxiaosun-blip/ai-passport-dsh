@@ -10,6 +10,7 @@
 #include "bsp_audio.h"
 #include "bsp_battery.h"
 #include "bsp_pins.h"      // 错误日志里要打印 BSP_LCD_* 引脚号
+#include "app_ui.h"      // ← 本应用对上游的侵入点 1/2（见下方 app_main 处说明）
 #include "demo.h"
 #include "demo_navigation.h"
 #include "ui_pixel.h"
@@ -191,6 +192,14 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
 }
 
 void app_main(void) {
+    // ── 本应用对上游的侵入点 2/2 ────────────────────────────────────────────
+    // AI Passport × DSH 联机应用直接进入自己的界面，不经 demo 菜单
+    // （上游 AGENTS.md 要求二次开发必须重新设计独立 UI，禁止沿用 demo 菜单）。
+    // demo_*.c 仍留在树里作为 BSP 的可运行参考；要回到菜单，删掉下面这两行
+    // 并恢复再往下的原有实现即可。
+    passport_app_main();
+    return;
+
     ESP_LOGI(TAG, "FoloToy AI Passport BSP demo 启动");
     esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
     if (wakeup != ESP_SLEEP_WAKEUP_UNDEFINED) {

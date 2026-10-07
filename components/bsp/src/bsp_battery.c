@@ -113,11 +113,24 @@ static int cw_update_profile(void) {
 }
 
 // 首次计算期间 SOC 可能暂时大于 100；最多等待 5 秒再判定初始化失败。
+/**
+ * 等电量计算出可信的 SOC。
+ *
+ * ★ 深睡唤醒后电量计会**重新起算**：SOC 寄存器在算出来之前读 0。
+ *   早先只看 "soc <= 100" 就把 0 当成就绪，于是 hello 里上报 0%（真机踩到：
+ *   自动关机唤醒后主机面板显示 0%，实际还有 98%）。
+ *   现在用电压判别：电压正常（>= 3.5V）却报 0% → 还没算好，继续等；
+ *   电压确实很低（< 3.5V）时 0% 是可信的，直接返回。
+ *   最长等 5 秒，等不到就交给上层（上层会把 -1 当作"读不到"处理）。
+ */
 static int cw_wait_soc_ready(void) {
     for (int retry = 0; retry < 50; retry++) {
         uint8_t soc = 0;
         vTaskDelay(pdMS_TO_TICKS(100));
-        if (cw_read(CW_REG_SOC_H, &soc, 1) == 0 && soc <= 100) return 0;
+        if (cw_read(CW_REG_SOC_H, &soc, 1) != 0 || soc > 100) continue;
+        if (soc > 0) return 0;
+        const int mv = bsp_battery_mv();
+        if (mv > 0 && mv < 3500) return 0;   // 电压也确实低 → 0% 可信
     }
     return -1;
 }

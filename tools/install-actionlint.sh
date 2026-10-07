@@ -49,12 +49,21 @@ if ! curl --fail --location --silent --show-error --retry 3 --retry-all-errors \
     gh release download "v${version}" --repo rhysd/actionlint \
         --pattern "${archive_name}" --dir "${destination}"
 fi
-if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s  %s\n' "${checksum}" "${archive_path}" | sha256sum --check --status
+# 校验工具的选择必须**实测能力**，不能只看命令是否存在。
+# macOS 自带 /sbin/sha256sum（BSD 版），它不认识 GNU 的 --check/--status：
+# `command -v sha256sum` 会成功，但紧接着 `sha256sum --check` 打印 usage 并以非零退出，
+# 于是整个门禁在"校验下载包"这一步失败，报错却只显示一行 usage，很难定位。
+# 因此这里先跑一次真实调用，能用才用它，否则退回 shasum。
+if command -v sha256sum >/dev/null 2>&1 \
+    && printf '%s  %s\n' "${checksum}" "${archive_path}" | sha256sum --check --status >/dev/null 2>&1; then
+    :
 elif command -v shasum >/dev/null 2>&1; then
-    [[ "$(shasum -a 256 "${archive_path}" | awk '{print $1}')" == "${checksum}" ]]
+    [[ "$(shasum -a 256 "${archive_path}" | awk '{print $1}')" == "${checksum}" ]] || {
+        echo "actionlint archive checksum mismatch" >&2
+        exit 1
+    }
 else
-    echo "No SHA-256 verification tool is available" >&2
+    echo "No working SHA-256 verification tool is available" >&2
     exit 1
 fi
 tar -xzf "${archive_path}" -C "${destination}" actionlint

@@ -58,7 +58,8 @@ esptool.py -p /dev/cu.usbserial-XXXX write_flash 0x0 FoloToy-AI-Passport-full.bi
 esptool.py -p /dev/cu.usbserial-XXXX write_flash 0x0 build/FoloToy-AI-Passport-full.bin
 ```
 
-想恢复官方固件，用 [AI Passport 刷机工具](https://ai-passport.folotoy.cn/tools/web-flasher/)。构建环境准备、常见偏差处理、插件安装与语音模型启用，见插件仓库的 `docs/03-构建与烧录.md`。
+想恢复官方固件，用 [AI Passport 刷机工具](https://ai-passport.folotoy.cn/tools/web-flasher/)。构建环境准备、常见偏差处理、插件安装与语音模型启用，见插件仓库的
+[docs/03-构建与烧录.md](https://github.com/slinxiaosun-blip/dsh-ai-passport-plugin/blob/main/docs/03-构建与烧录.md)。
 
 ## 版本
 

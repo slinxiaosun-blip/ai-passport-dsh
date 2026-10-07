@@ -19,9 +19,24 @@
 
 这个固件只负责设备那一半，完整的玩法需要电脑端插件：
 
-**`dsh-ai-passport-plugin`** — DSH 插件，负责蓝牙链路、任务桥接、语音识别与桌面挂件。
+**电脑端插件：[`slinxiaosun-blip/dsh-ai-passport-plugin`](https://github.com/slinxiaosun-blip/dsh-ai-passport-plugin)**
+
+它负责蓝牙链路、任务桥接、语音识别与桌面挂件。安装方式：把该仓库 clone 到本地，
+运行其中的 `tools/install-plugin-to-dsh.sh`，详见该仓库 README 的「快速开始」。
 
 固件与插件之间的通信协议版本必须匹配（当前协议 v1）。
+
+## 下载固件（不用自己编译）
+
+最新固件在 [Releases](https://github.com/slinxiaosun-blip/ai-passport-dsh/releases/latest) 页面，
+下载 `FoloToy-AI-Passport-full.bin` 即可，它可以从 `0x0` 一次性刷入：
+
+```bash
+esptool.py -p /dev/cu.usbserial-XXXX write_flash 0x0 FoloToy-AI-Passport-full.bin
+```
+
+刷写会覆盖设备原有固件，且不保证保留已有设置。**刷之前先记下当前固件版本**，
+方便回退。恢复官方固件用 [AI Passport 刷机工具](https://ai-passport.folotoy.cn/tools/web-flasher/)。
 
 ## 自己编译
 

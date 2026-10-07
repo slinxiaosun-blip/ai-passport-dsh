@@ -1,65 +1,77 @@
+<p align="right">
+  <a href="README.zh_CN.md">简体中文</a> · <strong>English</strong>
+</p>
+
 # DSH Passport
 
-把 [FoloToy AI Passport](https://ai-passport.folotoy.cn/) 变成
-[DeepSeek Harness](https://github.com/deepseek-ai)（DSH）的**随身任务终端**。
+Turn the [FoloToy AI Passport](https://ai-passport.folotoy.cn/) into a
+**pocket task terminal** for [DeepSeek Harness](https://github.com/deepseek-ai) (DSH).
 
-在设备上就能管理电脑上跑的 AI 任务：
+Manage the AI tasks running on your computer right from the device:
 
-| 你能做的事 | 说明 |
+| What you can do | Description |
 | --- | --- |
-| 看任务台 | 浏览、切换、新建 DSH 任务，运行中的任务显示当前步骤和正在执行的操作 |
-| 收完成提醒 | 任务结束弹横幅 + 提示音，成功、出错、中断三种音效；未读任务带红点 |
-| 批工具调用 | 电脑上的 AI 要动文件或跑命令时，设备弹出授权页，按上下键选"允许/拒绝"，倒计时归零自动拒绝 |
-| 说一句话下指令 | 长按录音，说完松手，中文识别成文字后回填到电脑输入框 |
-| 查余额 | 长按下键看 DeepSeek 余额概览 |
+| Task board | Browse, switch, and create DSH tasks; a running task shows its current step and the operation being executed |
+| Completion alerts | Banner + sound when a task finishes, with distinct sounds for success, failure, and interruption; unread tasks carry a red dot |
+| Approve tool calls | When the AI on your computer touches files or runs commands, the device pops up an authorization page; pick allow/deny with the up/down keys; an expired countdown defaults to deny |
+| Speak to instruct | Hold to record and release when done; Chinese speech is transcribed and filled into the computer's input box |
+| Check balance | Hold the down key to view the DeepSeek balance summary |
 
-连接方式是**蓝牙近场直连电脑**：不需要 Wi-Fi、不需要配网、不需要输密码。首次配对时设备屏幕显示 6 位配对码，在电脑上输一次即可，配对码每次上电都会换。
+The link is a **direct Bluetooth connection to the computer**: no Wi-Fi, no network
+provisioning, no passwords. On first pairing the device shows a 6-digit code to enter
+on the computer once; the code changes on every power-up.
 
-## 需要配套的电脑端插件
+## Required companion computer-side plugin
 
-这个固件只负责设备那一半，完整的玩法需要电脑端插件：
+This firmware only covers the device half; the full experience needs the computer-side plugin:
 
-**电脑端插件：[`slinxiaosun-blip/dsh-ai-passport-plugin`](https://github.com/slinxiaosun-blip/dsh-ai-passport-plugin)**
+**Computer-side plugin: [`slinxiaosun-blip/dsh-ai-passport-plugin`](https://github.com/slinxiaosun-blip/dsh-ai-passport-plugin)**
 
-它负责蓝牙链路、任务桥接、语音识别与桌面挂件。安装方式：把该仓库 clone 到本地，
-运行其中的 `npm run install-plugin`（macOS / Windows 同一命令，安装器自动适配两个平台），
-详见该仓库 README 的「快速开始」。
+It handles the Bluetooth link, task bridging, speech recognition, and the desktop widget.
+To install, clone that repository and run `npm run install-plugin` (the same command on
+macOS and Windows; the installer adapts to both platforms). See that repository's README
+"Quick Start" for details.
 
-固件与插件之间的通信协议版本必须匹配（当前协议 v1）。固件**不区分主机平台**：
-同一份镜像对 macOS 与 Windows 的 DSH 客户端通用，一次烧录即可（设备只做 BLE 外设，
-分片按协商 MTU 动态计算，配对走应用层配对码，均与主机操作系统无关）。
+The protocol version must match between firmware and plugin (currently protocol v1).
+The firmware is **host-platform agnostic**: the same image works with DSH clients on
+macOS and Windows, so one flash covers both. The device is a pure BLE peripheral,
+chunking follows the negotiated MTU, and pairing uses an application-level code —
+none of it depends on the host operating system.
 
-## 下载固件（不用自己编译）
+## Download the firmware (no build required)
 
-最新固件在 [Releases](https://github.com/slinxiaosun-blip/ai-passport-dsh/releases/latest) 页面，
-下载 `FoloToy-AI-Passport-full.bin` 即可，它可以从 `0x0` 一次性刷入：
+The latest firmware is on the
+[Releases](https://github.com/slinxiaosun-blip/ai-passport-dsh/releases/latest) page;
+download `FoloToy-AI-Passport-full.bin` and flash it from `0x0` in one go:
 
 ```bash
-# macOS / Linux（串口形如 /dev/cu.usbserial-XXXX 或 /dev/cu.wchusbserial-XXXX）
+# macOS / Linux (serial ports look like /dev/cu.usbserial-XXXX or /dev/cu.wchusbserial-XXXX)
 esptool.py -p /dev/cu.usbserial-XXXX write_flash 0x0 FoloToy-AI-Passport-full.bin
 
-# Windows（串口形如 COM5，设备管理器里可查）
+# Windows (serial ports look like COM5; check Device Manager)
 esptool.py -p COM5 write_flash 0x0 FoloToy-AI-Passport-full.bin
 ```
 
-刷写会覆盖设备原有固件，且不保证保留已有设置。**刷之前先记下当前固件版本**，
-方便回退。恢复官方固件用 [AI Passport 刷机工具](https://ai-passport.folotoy.cn/tools/web-flasher/)。
+Flashing overwrites the firmware already on the device and does not guarantee that
+existing settings survive. **Note the current firmware version before flashing** so
+you can roll back. To restore the stock firmware, use the
+[AI Passport Web Flasher](https://ai-passport.folotoy.cn/tools/web-flasher/).
 
-## 自己编译
+## Build it yourself
 
-需要 ESP-IDF **v5.5.3**（装在仓库外、路径不含空格）：
+ESP-IDF **v5.5.3** is required (installed outside the repository, path without spaces):
 
 ```bash
-# 仓库检查 + 逻辑测试（秒级，不需要硬件）
+# Repository checks + logic tests (seconds, no hardware needed)
 ./tools/validate.sh --static
 
-# 完整构建，产出可从 0x0 一次性刷写的合并镜像（分钟级）
+# Full build producing a merged image flashable from 0x0 (minutes)
 ./tools/validate.sh --firmware
 ```
 
-产物：`build/FoloToy-AI-Passport-full.bin`
+Artifact: `build/FoloToy-AI-Passport-full.bin`
 
-刷写（会覆盖设备原有固件）：
+Flash (this overwrites the firmware on the device):
 
 ```bash
 # macOS / Linux
@@ -69,27 +81,36 @@ esptool.py -p /dev/cu.usbserial-XXXX write_flash 0x0 build/FoloToy-AI-Passport-f
 esptool.py -p COM5 write_flash 0x0 build/FoloToy-AI-Passport-full.bin
 ```
 
-想恢复官方固件，用 [AI Passport 刷机工具](https://ai-passport.folotoy.cn/tools/web-flasher/)。构建环境准备、常见偏差处理、插件安装与语音模型启用，见插件仓库的
-[docs/03-构建与烧录.md](https://github.com/slinxiaosun-blip/dsh-ai-passport-plugin/blob/main/docs/03-构建与烧录.md)。
+To restore the stock firmware, use the
+[AI Passport Web Flasher](https://ai-passport.folotoy.cn/tools/web-flasher/).
+For build-environment setup, common deviations, plugin installation, and enabling the
+speech model, see the plugin repository's
+[docs/03 build and flash guide](https://github.com/slinxiaosun-blip/dsh-ai-passport-plugin/blob/main/docs/03-%E6%9E%84%E5%BB%BA%E4%B8%8E%E7%83%A7%E5%BD%95.md).
 
-## 版本
+## Version
 
-固件版本由 `version.txt` 提供基底（当前 `1.1.0`），构建时自动追加 git 短哈希，
-例如 `1.1.0+g1a2b3c4-dirty`。这个串会随握手上报给电脑端，挂件信息格里显示的就是设备真实版本。
+The firmware version comes from `version.txt` (currently `1.1.0`); the build appends a
+short git hash automatically, e.g. `1.1.0+g1a2b3c4-dirty`. This string is reported to the
+computer during the handshake, and the widget's info cell shows the real version running
+on the device.
 
-- `1.1.0` —— 与插件 1.1.0 同步发布（插件侧适配 macOS / Windows 双 DSH 客户端）；
-  固件行为与 `1.0.0` 完全一致，此版本仅做版本对齐，一次烧录两端通用。
-- `1.0.0` —— 首个完整版本（任务台/审批/余额/语音/配对）。
+- `1.1.0` — released together with plugin 1.1.0 (the plugin side now adapts to both the
+  macOS and Windows DSH clients). Firmware behavior is identical to `1.0.0`; this release
+  only aligns version numbers, and one flash covers both host platforms.
+- `1.0.0` — first complete version (task board / approvals / balance / voice / pairing).
 
-## 来源与许可
+## Origin and License
 
-本仓库基于上游 [FoloToy/ai-passport](https://github.com/FoloToy/ai-passport)
-`main @ 0b9e4c8`（MIT）二次开发（作者 [slinxiaosun-blip](https://github.com/slinxiaosun-blip)），
-全部改动集中在 `feature/dsh-passport` 分支：
+This repository is a secondary development of the upstream
+[FoloToy/ai-passport](https://github.com/FoloToy/ai-passport) `main @ 0b9e4c8` (MIT) by
+[slinxiaosun-blip](https://github.com/slinxiaosun-blip). All changes live on the
+`feature/dsh-passport` branch:
 
-- **新增**：`main/app_*.c/.h` 设备应用（蓝牙链路、任务台、审批、问答、语音、配对、设置）
-- **侵入式改动**：`components/bsp` 四处、`main/CMakeLists.txt`、`main/main.c`、
-  `sdkconfig.defaults`、`tests/bsp_stubs`、`tools/`
-- 上游 `main` 分支保持与 `FoloToy/ai-passport` 同步，不承载本项目改动
+- **Added**: `main/app_*.c/.h` device application (Bluetooth link, task board, approvals,
+  Q&A, voice, pairing, settings)
+- **Invasive changes**: four spots in `components/bsp`, `main/CMakeLists.txt`,
+  `main/main.c`, `sdkconfig.defaults`, `tests/bsp_stubs`, `tools/`
+- The upstream `main` branch stays in sync with `FoloToy/ai-passport` and carries none of
+  this project's changes
 
-遵循上游 MIT 许可，原始版权归 FoloToy 所有。
+Released under the upstream MIT license; the original copyright belongs to FoloToy.

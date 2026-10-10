@@ -5,7 +5,7 @@
 //   → 缓冲够一条消息(< AP_MAX_PAYLOAD_BYTES)就 ap_link_send_voice 发出
 //
 // ★ 三个不能踩的坑（详见 docs/05-语音发送-设计.md）：
-//   1. **绝不缓冲整段录音**：400KB RAM 装不下 15s（32KB/s 原始 + BLE 栈 + LVGL）。
+//   1. **绝不缓冲整段录音**：400KB RAM 装不下 30s（32KB/s 原始 + BLE 栈 + LVGL）。
 //      用静态缓冲、够一条消息就发、源端丢帧。
 //   2. **ADPCM 表必须与 voice.js 的 decodeImaAdpcm 逐字节一致**，否则解出来是噪声。
 //      两张表从 voice.js 抄，附注释，不"优化"。
@@ -36,11 +36,8 @@ static const char *TAG = "app_voice";
 #define READ_SAMPLES       (SAMPLE_RATE * READ_MS / 1000)   // 320
 #define READ_BYTES         (READ_SAMPLES * 2)    // 640
 
-#define MAX_MS             15000                 // 录音上限 15s
-#define MAX_READS          (MAX_MS / READ_MS)    // 750 轮
-#define SILENCE_MS         1200                  // 静音自动结束
-#define SILENCE_READS      (SILENCE_MS / READ_MS) // 60 轮
-#define VAD_RMS_THRESHOLD  500                   // RMS 门限（低于视为静音，可调）
+#define MAX_MS             30000                 // 录音上限 30s
+#define MAX_READS          (MAX_MS / READ_MS)    // 1500 轮
 
 // 发送缓冲：ADPCM 4:1 后 20ms ≈ 160B。攒到 ~1600B（< 2048 载荷上限）就发一条。
 // 留余量，避免 tx_enqueue 因超上限拒绝。
@@ -123,14 +120,13 @@ static adpcm_state_t s_adpcm;
 static int s_block_bytes = 0;            // 当前 ADPCM 块已写的数据字节数
 #define ADPCM_BLOCK_DATA 504              // 与主机解码的 504B 数据边界一致
 
-static int s_read_count = 0;             // 本轮已读次数（15s 上限）
-static int s_silence_count = 0;          // 连续静音计数
+static int s_read_count = 0;             // 本轮已读次数（MAX_MS 上限）
 
 static int16_t s_pcm[READ_SAMPLES];      // 20ms PCM 读缓冲
 
 // ── 工具 ──────────────────────────────────────────────────────────────────
 
-/** 计算 20ms PCM 的 RMS（VAD 用）。 */
+/** 计算 20ms PCM 的 RMS（仅用于电平上报排障，不参与自动结束判定）。 */
 static int32_t rms_of(const int16_t *pcm, int n)
 {
     int64_t sum = 0;
@@ -234,7 +230,6 @@ static void app_voice_task(void *arg)
         s_adpcm.predictor = 0;
         s_adpcm.step_index = 0;
         s_read_count = 0;
-        s_silence_count = 0;
         xSemaphoreGive(s_lock);
 
         char begin[128];
@@ -272,30 +267,20 @@ static void app_voice_task(void *arg)
             }
             s_read_count++;
 
-            // VAD：连续静音 1.2s 自动结束。
+            // 电平统计：仅用于随 voice.end 上报峰值 RMS，供主机侧排障（识别结果为空时，
+            // 用来区分"根本没采到声音"和"采到了但没识别出来"）。
             //
-            // ★ 但**仅当按键已松开**时才自动结束。PTT 的语义是"按住多久录多久"，
-            //   用户按住说话中途思考/停顿 1-2 秒很常见 —— 若此时 VAD 自动切断，
-            //   录音就断了，用户还按着却没在录（真机返工记录的"第三秒跳变"）。
-            //   按键仍按住（s_stop_pending == false）时跳过静音判定，继续录。
+            // ★ 这里**不再做任何静音/自动结束判定**。录音结束只有两个来源：
+            //   松手（s_stop_pending）或达到 MAX_MS 上限。中间的停顿、思考、
+            //   句间留白都原样录进去，由识别模型自己处理上下文。
             int32_t rms = rms_of(s_pcm, READ_SAMPLES);
             if (rms > max_rms) max_rms = rms;
-            if (rms < VAD_RMS_THRESHOLD) {
-                s_silence_count++;
-                if (!s_stop_pending &&
-                    s_silence_count >= SILENCE_READS && s_read_count > SILENCE_READS) {
-                    ESP_LOGI(TAG, "静音超时且按键已松开，自动结束录音");
-                    stop = true;
-                }
-            } else {
-                s_silence_count = 0;
-            }
 
             encode_and_flush();
 
-            // 15s 上限
+            // MAX_MS 上限（唯一的自动结束条件之一，另一是松手）
             if (s_read_count >= MAX_READS) {
-                ESP_LOGI(TAG, "达到 15s 上限，自动结束录音");
+                ESP_LOGI(TAG, "达到 %dms 上限，自动结束录音", MAX_MS);
                 stop = true;
             }
         }

@@ -292,12 +292,18 @@ typedef enum {
 
 // ── 语音参数 ───────────────────────────────────────────────────────────────
 // 与 constants.js 的 AUDIO 对应。设备只负责采音 + 压缩 + 上行。
+//
+// ★ AP_AUDIO_MAX_SECONDS 是**单次录音时长的唯一真源**：app_voice.c 必须直接用它，
+//   不要在 app_voice.c 里另写一份 MAX_MS。两份各写各的会静默漂移 ——
+//   曾出现过 app_proto.h=15 而 app_voice.c=15、后来只改了后者的情况，
+//   parity 测试照样通过（它比的是没人用的那份），真机行为与协议契约脱节。
 #define AP_AUDIO_SAMPLE_RATE 16000
 #define AP_AUDIO_FALLBACK_SAMPLE_RATE 8000
 #define AP_AUDIO_BITS 16
 #define AP_AUDIO_CHANNELS 1
-#define AP_AUDIO_MAX_SECONDS 15
-#define AP_AUDIO_SILENCE_STOP_MS 1200
+#define AP_AUDIO_MAX_SECONDS 30
+// 旧版有 AP_AUDIO_SILENCE_STOP_MS（静音自动结束门限），已随该功能删除：
+// 录音只在「松手」或「触达 AP_AUDIO_MAX_SECONDS」时结束，句中停顿原样保留。
 
 // 帧头各字段的位运算助手。写成内联函数而不是宏，便于加类型检查。
 static inline uint8_t ap_head_byte0(uint8_t version, uint8_t flags)

@@ -36,8 +36,9 @@ static const char *TAG = "app_voice";
 #define READ_SAMPLES       (SAMPLE_RATE * READ_MS / 1000)   // 320
 #define READ_BYTES         (READ_SAMPLES * 2)    // 640
 
-#define MAX_MS             30000                 // 录音上限 30s
-#define MAX_READS          (MAX_MS / READ_MS)    // 1500 轮
+// 录音上限：直接用协议常量，**不要**在这里另写一份（见 app_proto.h 的说明）。
+#define MAX_MS             (AP_AUDIO_MAX_SECONDS * 1000)  // 录音上限，与协议契约同源
+#define MAX_READS          (MAX_MS / READ_MS)              // 30s → 1500 轮
 
 // 发送缓冲：ADPCM 4:1 后 20ms ≈ 160B。攒到 ~1600B（< 2048 载荷上限）就发一条。
 // 留余量，避免 tx_enqueue 因超上限拒绝。

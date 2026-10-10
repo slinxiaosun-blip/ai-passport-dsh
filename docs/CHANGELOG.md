@@ -12,6 +12,39 @@
 
 ## Unreleased
 
+## v1.2.1-dsh-passport - 2026-10-10
+
+- **On-device behavior is identical to `v1.2.0-dsh-passport`.** This release only removes
+  a duplicated constant.
+- Made `AP_AUDIO_MAX_SECONDS` the single source of truth for the recording cap:
+  `app_voice.c` now derives its `MAX_MS` from that macro instead of defining a private
+  copy. The two had silently drifted — `app_proto.h` said 15 while `app_voice.c` used a
+  separate value — so the cross-language parity test compared a macro that **nothing
+  referenced** and kept reporting agreement while the running firmware disagreed with the
+  protocol contract. Updated it to 30 to match actual runtime behavior.
+- Removed the dead `AP_AUDIO_SILENCE_STOP_MS` macro and its parity assertion, alongside
+  the silence auto-stop feature it belonged to.
+- **Not a firmware bug:** recordings longer than about 10 seconds failing silently (the
+  device stops by itself but produces no result and no error) is caused by the companion
+  **plugin**, which compared a hardcoded session-lifetime window against a longer recording
+  cap. It affects `v1.2.0-dsh-passport` equally. Upgrading the plugin to 1.2.0 is required
+  for long recordings to work.
+- Release flow: the development line was moved from `feature/dsh-passport` to `main`
+  (pure fast-forward, no merge commit) and `main` is now the repository default branch;
+  the feature branch was deleted after confirming it carried no unique commits. All four
+  release tags remain reachable from `main`.
+
+## v1.2.0-dsh-passport - 2026-10-10
+
+- Raised the single-recording cap from **15s to 30s**. The device now stops on its own at
+  the cap; releasing the button earlier still ends the recording at the actual duration.
+- **Removed the 1.2s silence auto-stop.** Recording now ends on exactly two conditions:
+  button release, or reaching the cap. Pauses, hesitations and sentence gaps are captured
+  verbatim, so a long instruction no longer gets cut off mid-thought.
+- Verified on hardware: a 30s recording produces an archive of exactly 30.000s with no
+  dropped fragments, and a mid-sentence pause is preserved in the audio with both halves
+  recognized.
+
 ## v1.1.0-dsh-passport - 2026-10-07
 
 - Released firmware `1.1.0`. On-device behavior is identical to `1.0.0`; the version

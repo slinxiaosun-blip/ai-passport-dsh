@@ -33,6 +33,7 @@ idf_component_register(
          "fonts/app_ui_font_cjk.c"
          "fonts/app_ui_font_cjk16.c"
          "fonts/app_ui_font_xl.c"
+         "fonts/app_ui_font_timer.c"
          "utf8_clamp.c"
          ${APP_SCREENSHOT_SRC}
          "demo_navigation.c"

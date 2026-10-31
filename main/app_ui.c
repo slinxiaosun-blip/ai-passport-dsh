@@ -88,6 +88,7 @@ static lv_obj_t *s_app_name;
 
 // 状态卡（v2.0：圆角卡片 + 状态灯，取代旧版"整块铺状态色"）
 static lv_obj_t *s_state_block;   // 卡片本体（底色固定 UI_CARD）
+static lv_obj_t *s_state_row;     // 信息行：灯 + 大字，整组水平居中（flex）
 static lv_obj_t *s_state_chip;    // 状态灯：22×22 圆，淡底
 static lv_obj_t *s_state_chip_dot; // 状态灯芯：5px 实色点
 static lv_obj_t *s_state_text;    // 状态大字（状态词**只在这里出现一次**）
@@ -341,13 +342,15 @@ static void refresh_timer(bool force)
     if (!force && (int32_t)elapsed_s == s_run_last_sec) return;
     s_run_last_sec = (int32_t)elapsed_s;
 
-    // ★ 字号**不再随运行时长变化**。
-    //   旧逻辑是超过 1 小时改用 8px 点阵：那时用的是 16px 点阵（等宽，
-    //   每字符 16px），跨小时串 "10:23:45" 要 128px，左端会伸进徽章药丸。
-    //   换成 16px 思源黑体后同一个串只有 61.5px（数字 8.81 / 冒号 4.31），
-    //   右侧 192px 的可用宽度里绰绰有余 —— 于是"跨小时字变小"这个
-    //   纯观感副作用消失，整块卡片里也只有一种字号了。
-    //   （判据改了字体就必须重算，别再凭"字数 × 字号"心算，见 app_ui_theme.h。）
+    // ★ 字号**恒定 28px**（UI_FONT_TIMER），跨小时不降级。
+    //   历史上这里有两代"跨小时缩字号"的代码：16px 点阵时代放不下
+    //   "10:23:45"（等宽，每字符 16px = 128px），超 1 小时就换 8px 点阵；
+    //   换成 16px 思源后 61.5px 就够了，那套逻辑随之删除。
+    //   10-31 用户要求"计时显示大一点"，于是另起一档 28px 数字字体：
+    //   同一个串 107.4px，卡片右侧 192px 可用宽度仍宽裕 ——
+    //   一份字号覆盖 M:SS 与 H:MM:SS 两种形态，不需要再按长度分档。
+    //   （判据改了字体就必须用真实 adv_w 重算，别按"字数 × 字号"心算，
+    //     见 app_ui_theme.h 状态条一节的踩坑记录。）
     char buf[16];
     format_elapsed(elapsed_s, buf, sizeof(buf));
     lv_label_set_text(s_timer_text, buf);
@@ -811,12 +814,31 @@ static void build_state_card(void)
     lv_obj_set_pos(s_state_block, PX(0), PY(UI_STATE_CARD_Y));
     lv_obj_set_size(s_state_block, UI_W, UI_STATE_CARD_H);
 
+    // ── 信息行：状态灯 + XL 大字 ────────────────────────────────────────
+    //
+    // ★ 这一行是**整组水平居中**（10-31 用户要求"信息居中"）。
+    //   居中交给 flex，而不是给两个元素各算一个 x：大字宽度随状态词变
+    //   （空闲 2 字 80px、运行中 3 字 120px），"整组居中"要求灯跟着一起挪；
+    //   逐个写死 x 就等于为每个状态词维护一套坐标，改文案必漏一处。
+    //
+    // ★ 容器必须清掉全部样式：lv_obj_create 默认带底色、圆角、12px 内边距，
+    //   不清就会在卡片中间多出一块灰底方框，而且内边距会把内容整体挤偏
+    //   —— 症状是"明明设了居中，看上去却偏右 12px"。
+    s_state_row = lv_obj_create(s_state_block);
+    lv_obj_remove_style_all(s_state_row);
+    lv_obj_remove_flag(s_state_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(s_state_row, UI_W, UI_STATE_ROW_H);
+    lv_obj_set_pos(s_state_row, 0, UI_STATE_ROW_Y);
+    lv_obj_set_flex_flow(s_state_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_state_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(s_state_row, UI_STATE_CHIP_GAP, 0);
+
     // 状态灯：22×22 正圆（UI_R_PILL 在等宽等高时就是圆），内芯 5px 实色点。
     // ★ 固定尺寸，不再 LV_SIZE_CONTENT 随文字伸缩 —— 里面已经没有文字了。
-    s_state_chip = lv_obj_create(s_state_block);
+    s_state_chip = lv_obj_create(s_state_row);
     ui_theme_pill(s_state_chip, UI_DIM_BG);
     lv_obj_set_size(s_state_chip, UI_STATE_CHIP_H, UI_STATE_CHIP_H);
-    lv_obj_set_pos(s_state_chip, UI_CARD_PAD_X, UI_STATE_CHIP_Y);
     lv_obj_set_flex_flow(s_state_chip, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(s_state_chip, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
@@ -825,27 +847,27 @@ static void build_state_card(void)
     ui_theme_pill(s_state_chip_dot, UI_DIM);
     lv_obj_set_size(s_state_chip_dot, UI_STATE_CHIP_DOT, UI_STATE_CHIP_DOT);
 
-    // XL 大字：**左对齐**（设计稿改版）。居中时"运行中"三个字会被两侧留白
-    // 推得比徽章还轻，视线抓不住；左对齐让徽章、大字、提示落在同一条竖向基线上。
-    s_state_text = ui_theme_text(s_state_block, "空闲", UI_FONT_XL, UI_DIM);
-    lv_obj_set_pos(s_state_text, UI_CARD_PAD_X, UI_STATE_TEXT_Y);
-    lv_obj_set_width(s_state_text, UI_STATE_HINT_W);
-    lv_obj_set_style_text_align(s_state_text, LV_TEXT_ALIGN_LEFT, 0);
+    // XL 大字：**不设宽度**，让标签宽度等于内容宽度。
+    //   设成 192 的话标签盒会占满整行，flex 居中的是那个盒子、不是文字，
+    //   看上去大字仍然贴左 —— 与"信息居中"刚好相反。
+    s_state_text = ui_theme_text(s_state_row, "空闲", UI_FONT_XL, UI_DIM);
 
-    // 提示行：2 行 + 省略号，左对齐（高度由 UI_STATE_HINT_H 钉死，见主题头说明）
+    // 提示行：2 行 + 省略号，**居中**（与大字同一条中线，见主题头纵向预算）
     s_state_hint = ui_theme_text(s_state_block, "", UI_FONT_CJK, UI_SUB);
     lv_obj_set_pos(s_state_hint, UI_CARD_PAD_X, UI_STATE_HINT_Y);
     lv_obj_set_width(s_state_hint, UI_STATE_HINT_W);
     lv_obj_set_height(s_state_hint, UI_STATE_HINT_H);
-    lv_obj_set_style_text_align(s_state_hint, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_align(s_state_hint, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_line_space(s_state_hint, UI_TEXT_LINE_SPACE, 0);
     lv_label_set_long_mode(s_state_hint, LV_LABEL_LONG_DOT);
 
-    // 运行计时：贴卡片右上角，与徽章同一行。
-    // ★ 16px 思源（与状态条同一款）：等宽点阵在 16px 下 6 位数字要 96px，
-    //   思源只要 52.9px，且数字是 tabular（每字等宽），秒数跳动时不会左右抽。
-    //   右对齐 = 标签宽度自适应、右边缘钉死在卡片内边距上，数字变长只向左长。
-    s_timer_text = ui_theme_text(s_state_block, "", UI_FONT_CJK16, UI_INFO);
+    // 运行计时：贴卡片右上角，**28px**（UI_FONT_TIMER，只含数字与冒号）。
+    // ★ 为什么不和状态条共用 16px 思源：那个字号在桌角得凑近才读得到，
+    //   而计时是"要不要现在走过去处理"的判断依据，应当比正文更大一档。
+    // ★ 28px 下 "10:23:45" 实宽 107.4px，右侧 192px 的可用宽度放得下，
+    //   跨小时也不用降字号（旧版 16px 点阵时代那套降字号逻辑已删）。
+    //   右对齐 = 右边缘钉死在卡片内边距上，数字变长只向左长。
+    s_timer_text = ui_theme_text(s_state_block, "", UI_FONT_TIMER, UI_INFO);
     lv_obj_align(s_timer_text, LV_ALIGN_TOP_RIGHT, -UI_CARD_PAD_X, UI_STATE_TIMER_Y);
 }
 
@@ -940,9 +962,13 @@ void app_ui_destroy(void)
     s_link_bars[2] = NULL; s_link_bars[3] = NULL;
     s_batt_shell = NULL; s_batt_fill = NULL; s_batt_tip = NULL; s_batt_text = NULL;
     s_app_name = NULL;
-    s_state_block = NULL; s_state_chip = NULL; s_state_chip_dot = NULL;
+    s_state_block = NULL; s_state_row = NULL; s_state_chip = NULL; s_state_chip_dot = NULL;
     s_state_text = NULL; s_state_hint = NULL; s_footer_l1 = NULL; s_footer_l2 = NULL;
     s_footer_sep = NULL;
+    // ★ 这两个原先漏了：refresh_timer / refresh_clock 开头都是 `if (!ptr) return;`，
+    //   指针不清空的话那句判断永远为假，销毁后一旦回调再跑就是访问已释放对象。
+    s_timer_text = NULL;
+    s_clock_text = NULL;
     s_toast = NULL; s_toast_text = NULL;
 }
 

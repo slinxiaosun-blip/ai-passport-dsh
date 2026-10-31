@@ -21,8 +21,18 @@
   and the colon by 4.31, so `20:17` is only 39.6px and `100%` only 41.1px. No copy had to shrink.
 - **The elapsed timer no longer shrinks with runtime.** It used to drop to 8px bitmap past one
   hour, because `10:23:45` is 128px wide in bitmap and collided with the state chip. At 16px
-  Source Han Sans the same string is 61.5px, so the downgrade and its state variable are gone;
-  `UI_STATE_TIMER_Y` moved 13→15 to sit on the chip's baseline.
+  Source Han Sans the same string is 61.5px, so the downgrade and its state variable are gone.
+  (The chip/timer row was laid out again when the timer grew to 28px — see the next entry.)
+- **Status card re-laid out: info centred, timer enlarged to 28px.** The state light and the 40px
+  status word now share one flex row that is centred as a group — the word's width varies by
+  state (80px vs 120px), so centring "the group" means the light has to move with it; per-element
+  x coordinates would need one set per status word. The two-line hint shares the same centre line.
+  Vertical positions are now derived, not hard-coded: block height 38 + 8 + 52 = 98, centred in
+  the 31..182 area under the timer → row 57..95, hint 103..155. The timer gets its own 28px face
+  (`app_ui_font_timer`, digits and colon only, 8.6KB): `10:23:45` measures 107.4px, so one size
+  covers both `M:SS` and `H:MM:SS`. The 40px status font could not be reused — it is generated
+  from the status words and has no digit glyphs. Also clears `s_timer_text` / `s_clock_text` on
+  destroy, which were left dangling and made their `if (!ptr) return;` guards useless.
 - Added layout modelling for the status-bar clock in `tools/verify-layout.py`, and the clock
   conversion in `main/app_clock_logic.c` (day wrap, half-hour zones, negative offsets) pinned by
   `tests/test_app_clock.c`.

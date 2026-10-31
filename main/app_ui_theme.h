@@ -112,12 +112,19 @@
 // 超大字号：用于"状态大字"。设备可能被放在桌角，状态必须隔一两米也能认出，
 // 因此单独生成 40px 档（见 tools/make-fonts.py 的 UI_FONT_XL 说明）。
 #define UI_FONT_XL (&app_ui_font_xl)
+// 运行计时 28px：**只有数字和冒号**（TIMER_CHARS）。
+// ★ 为什么不复用 UI_FONT_CJK16：16px 的 "10:23:45" 只有 61px，
+//   放在桌角得凑近才读得到，而计时恰恰是"要不要现在走过去"的判断依据。
+// ★ 为什么不复用 UI_FONT_XL：40px 档按状态词生成，字符集里根本没有数字，
+//   拿它显示计时就是满屏方块。字号档与字符集是绑定的，不能只挑字号。
+#define UI_FONT_TIMER (&app_ui_font_timer)
 
 extern const lv_font_t app_ui_font_8;
 extern const lv_font_t app_ui_font_16;
 extern const lv_font_t app_ui_font_cjk;
 extern const lv_font_t app_ui_font_cjk16;
 extern const lv_font_t app_ui_font_xl;
+extern const lv_font_t app_ui_font_timer;
 
 // ── 布局栅格（面板可视区，全部硬边）──────────────────────────────────────
 //
@@ -147,6 +154,10 @@ extern const lv_font_t app_ui_font_xl;
 // 16px 中文的行高。用在底栏、键帽提示这类"要塞更多字"的地方：
 // 20px 一行约 10 个汉字，16px 每行约 13 个，行高 20px。
 #define UI_LINE_H_CJK16 20
+// 运行计时 28px 的行高。★ 28px 字号的行高只有 21px —— 这不矛盾：
+// lv_font_conv 的 line_height 取的是**实际字形盒**（digits 15×21），没有下伸部，
+// 所以行框比字号小。不要按"字号 + 4"想当然写 32，那会在计时上方多出 11px 空档。
+#define UI_LINE_H_TIMER 21
 #define UI_TEXT_LINE_SPACE 4    // ui_theme_text 默认行间距
 #define UI_TEXT_PITCH_CJK (UI_LINE_H_CJK + UI_TEXT_LINE_SPACE)   // 多行行距 = 28
 
@@ -211,35 +222,53 @@ extern const lv_font_t app_ui_font_xl;
 // 卡片左右内边距（设计稿 §3：徽章 left14、提示 right14）
 #define UI_CARD_PAD_X 14
 
-// 状态卡内部（相对卡片左上角）
-//     状态灯   14 .. 36     22×22 正圆（只有色，没有字）
-//     XL 大字  62 .. 100    XL 行框 38 —— 状态词**只出现这一次**
-//     提示    110 .. 162    最多 2 行（只放主机下发的任务标题）
+// 状态卡内部（相对卡片左上角）—— **信息整组居中**
+//     运行计时 10 .. 31     28px 行框 21（贴右上角；只在「运行中」出现）
+//     信息行   57 .. 95     灯 + XL 大字作为一组，**水平居中**（行框 38）
+//     提示    103 .. 155    最多 2 行，与大字同一中线居中
+//
+// ★ 10-31 用户要求：状态这组信息要居中（原来灯贴左、大字贴左、计时贴右，
+//   整张卡片看起来"散在四个角"）。改法是：灯与大字放进一个横排容器，
+//   由 flex 居中 —— 而不是给每个元素各算一个 x。
+//   原因很实在：大字宽度随状态词变（空闲 2 字 80px、运行中 3 字 120px），
+//   "整组居中"要求灯跟着一起挪；逐个写死 x 就得为每个状态词维护一套坐标，
+//   改一个字就要重排一次，且必然有一处会忘。
+//
+// ★ 纵向不是拍出来的数字，是算的：
+//   块高 = 信息行 38 + 缝 8 + 提示 52 = 98
+//   可用区 = 计时下沿 31 .. 卡片底 182（151 高）
+//   上边距 = (151 − 98) / 2 = 26 → 信息行 57..95、提示 103..155
+//   于是上方留 26、下方留 27，视觉上平衡；整块也仍然落在卡片中线上。
+//   （旧版是"灯 14 / 大字 62 / 提示 110"三处硬编码，改字号就得重算三遍。）
 //
 // ★ 状态灯为什么是 22×22 而不是设计稿写的 18 高药丸：
 //   ① 18px 是按 11px 西文算的，设备上中文最小 16px（行高 20），18px 的胶囊
 //      装 20px 行框会裁字 —— 中文被裁就是方块（见文件头教训 1）；
 //   ② 10-31 起灯里不再放文字（原先"圆点 + 状态词"与大字重复），
-//      尺寸改为等高固定的正圆。留着 22 是因为它与同一行的计时行框（20）
-//      几乎等高，视觉上是一条横向对齐带。
-#define UI_STATE_CHIP_Y 14
+//      尺寸改为等高固定的正圆。留在 22 是为了在 38px 的信息行里不显小。
 #define UI_STATE_CHIP_H 22
 #define UI_STATE_CHIP_DOT 5         // 灯芯：5px 实色点
-#define UI_STATE_TEXT_Y 62
-// 计时贴卡片右上角，与徽章同一行。
-// ★ 15 而不是 14：徽章高 22、内文行框 20，居中后文字盒在 15..35；
-//   计时用同一款 16px 思源（行框 20），对齐到 15 才与徽章里的字**同一基线**。
-//   旧值 13 是配 16px 点阵（行框 16）算的，换字体后必须重算 ——
-//   否则两个 16px 的字看起来一高一低，正是用户说的"没对齐"。
-#define UI_STATE_TIMER_Y 15
-#define UI_STATE_HINT_Y 110
+#define UI_STATE_CHIP_GAP 10        // 灯与大字之间（flex 列间距）
+#define UI_STATE_TIMER_Y 10
 
-// ★ 提示只给 **2 行**。算一下就知道 3 行放不下：
-//     110 + (3 × 28 − 4) = 190 > 182（卡片高）
-//   主机下发的标题长短不定，多给一行就会压出卡片边界。2 行 + 省略号是上限。
+// ★ 提示只给 **2 行** —— 这是取舍，不是"放不下"。
+//   3 行其实算得开：块高 = 38 + 8 + (3 × 28 − 4) = 126 < 151（可用区）。
+//   不这么做的原因是**居中会把大字顶上去**：3 行时块高 126，上边距只剩 12，
+//   信息行被推到 43..81，大字离开视觉中心 29px，看起来像"整块内容偏上"。
+//   主机标题通常一两行就说完了，超出部分用省略号比第 3 行更有信息量。
 #define UI_STATE_HINT_LINES 2
 #define UI_STATE_HINT_H (UI_STATE_HINT_LINES * UI_TEXT_PITCH_CJK - UI_TEXT_LINE_SPACE) // = 52
 #define UI_STATE_HINT_W (UI_W - UI_CARD_PAD_X * 2)      // = 192
+
+// 信息行（灯 + 大字）：行高取 XL 行框，灯在其内纵向居中
+#define UI_STATE_ROW_H UI_LINE_H_XL                                 // = 38
+#define UI_STATE_ROW_GAP 8                                          // 信息行与提示之间
+#define UI_STATE_BLOCK_H (UI_STATE_ROW_H + UI_STATE_ROW_GAP + UI_STATE_HINT_H) // = 98
+#define UI_STATE_BODY_Y (UI_STATE_TIMER_Y + UI_LINE_H_TIMER)         // = 31
+#define UI_STATE_ROW_Y (UI_STATE_BODY_Y + (UI_STATE_CARD_H - UI_STATE_BODY_Y - UI_STATE_BLOCK_H) / 2) // = 57
+#define UI_STATE_HINT_Y (UI_STATE_ROW_Y + UI_STATE_ROW_H + UI_STATE_ROW_GAP)                          // = 103
+// 灯在信息行里纵向居中的偏移（flex 也会居中，这里给校验脚本一个可算的坐标）
+#define UI_STATE_CHIP_INSET ((UI_STATE_ROW_H - UI_STATE_CHIP_H) / 2) // = 8
 
 // 底栏卡内部（两行提示 + 中间 26×1 发丝线）
 //   内容高 = 20 + 8 + 1 + 8 + 20 = 57，卡高 76 → 上下各留 9/10，接近居中

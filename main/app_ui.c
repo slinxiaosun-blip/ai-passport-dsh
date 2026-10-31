@@ -86,12 +86,11 @@ static volatile int s_pending_battery = BATT_UNKNOWN;
 static volatile bool s_batt_dirty = false;
 static lv_obj_t *s_app_name;
 
-// 状态卡（v2.0：圆角卡片 + 徽章药丸，取代旧版"整块铺状态色"）
+// 状态卡（v2.0：圆角卡片 + 状态灯，取代旧版"整块铺状态色"）
 static lv_obj_t *s_state_block;   // 卡片本体（底色固定 UI_CARD）
-static lv_obj_t *s_state_chip;    // 徽章药丸容器
-static lv_obj_t *s_state_chip_dot; // 徽章里的圆点
-static lv_obj_t *s_state_chip_text; // 徽章文字
-static lv_obj_t *s_state_text;    // 状态大字
+static lv_obj_t *s_state_chip;    // 状态灯：22×22 圆，淡底
+static lv_obj_t *s_state_chip_dot; // 状态灯芯：5px 实色点
+static lv_obj_t *s_state_text;    // 状态大字（状态词**只在这里出现一次**）
 static lv_obj_t *s_state_hint;    // 一行补充说明（任务标题 / 提示）
 
 // ── 运行计时（仅「运行中」显示）──
@@ -207,28 +206,35 @@ static uint32_t state_chip_bg(ap_task_state_t st)
     }
 }
 
+/**
+ * 状态的三个呈现面：大字文案、提示行文案、主色。
+ *
+ * ★ `hint` 现在**四个状态全为空**。它原本写的是状态词的另一种说法
+ *   （"运行中" / "任务正在执行"、"空闲" / "没有正在执行的任务"……），
+ *   在大字已经明说的前提下纯属重复。提示行从此专职显示**主机下发的任务
+ *   标题**（见 refresh_state），没有标题就空着 —— 空白比复述更安静。
+ *   这也是"状态显示有重复"这条反馈的根：同一句话在徽章、大字、提示行
+ *   出现了两到三次。
+ */
 static void state_style(ap_task_state_t st, const char **text, const char **hint, uint32_t *color)
 {
+    *hint = "";
     switch (st) {
     case AP_TASK_STATE_RUNNING:
         *text = "运行中";
-        *hint = "任务正在执行";
         *color = UI_INFO;
         break;
     case AP_TASK_STATE_WAITING_APPROVAL:
         *text = "待审批";
-        *hint = "按确定键处理";
         *color = UI_WARN;
         break;
     case AP_TASK_STATE_COMPLETED:
         *text = "已完成";
-        *hint = "任务刚刚结束";
         *color = UI_ACCENT;
         break;
     case AP_TASK_STATE_IDLE:
     default:
         *text = "空闲";
-        *hint = "没有正在执行的任务";
         *color = UI_DIM;
         break;
     }
@@ -408,11 +414,15 @@ static void refresh_state(void)
     uint32_t color = UI_DIM;
     state_style(s_state, &text, &hint, &color);
 
-    // 大字 + 徽章：文字色与徽章底色成对取自同一状态（见 state_chip_bg）
+    // 大字 + 状态灯：文字**只写一次**（大字），灯只用颜色表达。
+    //
+    // ★ 这里原先还有个「徽章药丸」：圆点 + 状态词，和大字取同一个字符串，
+    //   于是屏幕上「运行中」出现两遍（用户反馈"状态显示有重复的"）。
+    //   状态这种一眼信息，重复两遍不是强调、是噪音；现在灯退化成 22×22 的
+    //   圆形指示灯，文字只留大字一处。灯的淡底（12% 状态色）+ 实色芯
+    //   保留了原来的层次，也仍然能靠颜色在余光里分辨状态。
     lv_label_set_text(s_state_text, text);
     lv_obj_set_style_text_color(s_state_text, lv_color_hex(color), 0);
-    lv_label_set_text(s_state_chip_text, text);
-    lv_obj_set_style_text_color(s_state_chip_text, lv_color_hex(color), 0);
     lv_obj_set_style_bg_color(s_state_chip, lv_color_hex(state_chip_bg(s_state)), 0);
     lv_obj_set_style_bg_color(s_state_chip_dot, lv_color_hex(color), 0);
     // ★ 卡片底色**不随状态变**：颜色只出现在徽章与大字上。
@@ -801,23 +811,19 @@ static void build_state_card(void)
     lv_obj_set_pos(s_state_block, PX(0), PY(UI_STATE_CARD_Y));
     lv_obj_set_size(s_state_block, UI_W, UI_STATE_CARD_H);
 
-    // 徽章药丸：宽度随文字自适应（LV_SIZE_CONTENT + 横向 flex），
-    // "空闲"两字与"待审批"三字各自贴边，不会出现一块固定宽度的空胶囊。
+    // 状态灯：22×22 正圆（UI_R_PILL 在等宽等高时就是圆），内芯 5px 实色点。
+    // ★ 固定尺寸，不再 LV_SIZE_CONTENT 随文字伸缩 —— 里面已经没有文字了。
     s_state_chip = lv_obj_create(s_state_block);
     ui_theme_pill(s_state_chip, UI_DIM_BG);
-    lv_obj_set_size(s_state_chip, LV_SIZE_CONTENT, UI_STATE_CHIP_H);
+    lv_obj_set_size(s_state_chip, UI_STATE_CHIP_H, UI_STATE_CHIP_H);
     lv_obj_set_pos(s_state_chip, UI_CARD_PAD_X, UI_STATE_CHIP_Y);
-    lv_obj_set_style_pad_hor(s_state_chip, UI_STATE_CHIP_PAD_X, 0);
-    lv_obj_set_style_pad_column(s_state_chip, UI_STATE_CHIP_GAP, 0);
     lv_obj_set_flex_flow(s_state_chip, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(s_state_chip, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+    lv_obj_set_flex_align(s_state_chip, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
 
     s_state_chip_dot = lv_obj_create(s_state_chip);
     ui_theme_pill(s_state_chip_dot, UI_DIM);
     lv_obj_set_size(s_state_chip_dot, UI_STATE_CHIP_DOT, UI_STATE_CHIP_DOT);
-
-    s_state_chip_text = ui_theme_text(s_state_chip, "空闲", UI_FONT_CJK16, UI_DIM);
 
     // XL 大字：**左对齐**（设计稿改版）。居中时"运行中"三个字会被两侧留白
     // 推得比徽章还轻，视线抓不住；左对齐让徽章、大字、提示落在同一条竖向基线上。
@@ -935,7 +941,6 @@ void app_ui_destroy(void)
     s_batt_shell = NULL; s_batt_fill = NULL; s_batt_tip = NULL; s_batt_text = NULL;
     s_app_name = NULL;
     s_state_block = NULL; s_state_chip = NULL; s_state_chip_dot = NULL;
-    s_state_chip_text = NULL;
     s_state_text = NULL; s_state_hint = NULL; s_footer_l1 = NULL; s_footer_l2 = NULL;
     s_footer_sep = NULL;
     s_toast = NULL; s_toast_text = NULL;

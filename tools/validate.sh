@@ -40,6 +40,11 @@ run_static_checks() {
         tests/test_conn_logic.c main/app_conn_logic.c \
         -o "${test_dir}/test_conn_logic"
     "${test_dir}/test_conn_logic"
+    # 状态条时钟：UTC 秒 + 时区偏移 → HH:MM（跨日、半小时时区、负偏移回绕）
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_app_clock.c main/app_clock_logic.c \
+        -o "${test_dir}/test_app_clock"
+    "${test_dir}/test_app_clock"
     # 配对纯逻辑（阶段 C）：6 位码派生、常量时间比较、失败限流
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_pair_logic.c main/app_pair_logic.c \

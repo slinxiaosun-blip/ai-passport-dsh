@@ -1,7 +1,14 @@
-// main/app_ui_theme.h —— 界面设计约束（"bit 极简"风格的单一事实来源）。
+// main/app_ui_theme.h —— 界面设计约束（单一事实来源）。
 //
-// 设计意图：像一台 80 年代终端/掌机。硬边、无圆角、无渐变、无阴影；
-// 只用 1bpp 点阵字体（Press Start 2P）与少数几个纯色块。
+// 设计意图（v2.0 起）：**圆角卡片 + 冷灰底 + 终端绿强调**。
+//   旧版是"bit 极简"：硬边、无圆角、无阴影，像 80 年代掌机。
+//   240×320 的小屏上硬边确实干净，但卡片之间无法形成层次，用户反馈
+//   "分不清哪一块是状态、哪一块是提示"。v2.0 改用 16px 圆角卡片 +
+//   1px 内描边来分区，颜色仍克制（见 docs/09 设计稿）。
+//
+// ★ 这一版（P2）**只换令牌与助手**，不改任何版面常数：
+//   圆角化会改变圆角处的可用像素，版面预算要跟着重算，属于 P3 的事。
+//   把两件事混在一起改，一旦布局红了就分不清是令牌还是坐标的问题。
 //
 // ★ 一条硬约束：**界面文本只用 ASCII**。
 //   原因不是审美偏好，而是踩过的坑：LVGL 内置的 CJK 子集不覆盖本应用文案
@@ -17,20 +24,67 @@
 
 #include <stdint.h>
 
-// ── 调色板：终端绿 + 冷灰，少量警告色 ─────────────────────────────────────
-#define UI_BG 0x0B0F14        // 近黑（不是纯黑，留一点层次）
-#define UI_PANEL 0x111823     // 面板底
-#define UI_LINE 0x243447      // 分隔线 / 边框
-#define UI_FG 0xC8D6E5        // 主文本（冷白）
-#define UI_DIM 0x5A6B7D       // 次要文本
-#define UI_ACCENT 0x38E07B    // 终端绿（正常/在线）
-#define UI_WARN 0xFFB020      // 琥珀（进行中/注意）
-#define UI_ERR 0xFF4D4D       // 红（错误/危险）
-#define UI_INFO 0x4DB8FF      // 青蓝（信息/选中）
+// ── 调色板 v2.0（单一来源，取自 docs/09 设计稿的 :root）───────────────────
+//
+// ★ 先有语义名，再由旧名**指向**它们。
+//   反向做（旧名是真值、新名再抄一遍）会让同一颜色存在两处真值，
+//   改一处忘一处就会出现"卡片和描边不是同一套灰"的细微不一致 ——
+//   这种问题在小屏上不刺眼，但整屏会显得脏，且极难定位。
+#define UI_BG_v2 0x0B0F14       // 页面底
+#define UI_CARD 0x121A26        // 卡片底（比页面亮一档，用于承载内容）
+#define UI_CARD2 0x101823       // 次级卡片底
+#define UI_STROKE 0x223042      // 卡片 1px 内描边
+#define UI_HAIR 0x1B2735        // 细分隔线（比描边更弱）
+#define UI_FG_HI 0xE8EEF5       // 主文本（比旧版更亮，圆角底上更清晰）
+#define UI_SUB 0x8FA3B8         // 次文本
+#define UI_DIM2 0x5A6B7D        // 弱文本
+#define UI_ACC 0x3DDC84         // 终端绿（正常/在线）
+#define UI_INFO_v2 0x4DB8FF     // 青蓝（信息/选中）
+#define UI_WARN_v2 0xFFB454     // 琥珀（进行中/注意）
+#define UI_ERR_v2 0xFF5D5D      // 红（错误/危险）
 
-// 列表行与层次（新交互设计 v2）
-#define UI_ROW_SEL 0x1E2C3E   // 选中行底色：明显比背景亮，小屏上才看得出
-#define UI_FG_DIM 0x8FA3B8    // 次级前景：未选中行的标题
+// 旧名 → 新值。保留旧名是为了让既有调用点一处不改就换上新配色；
+// 以后新增代码请直接用上面的语义名。
+#define UI_BG UI_BG_v2
+#define UI_PANEL UI_CARD2
+#define UI_LINE UI_STROKE
+#define UI_FG UI_FG_HI
+#define UI_DIM UI_DIM2
+#define UI_ACCENT UI_ACC
+#define UI_WARN UI_WARN_v2
+#define UI_ERR UI_ERR_v2
+#define UI_INFO UI_INFO_v2
+
+// 列表行与层次
+#define UI_FG_DIM UI_SUB      // 次级前景：未选中行的标题
+
+// ── 预混色（12% 语义色叠在 UI_CARD 上的**实色**）──────────────────────────
+//
+// ★ 为什么预混成常量，而不是运行时用 opa 叠一层：
+//   LVGL 在滚动/裁剪内容上叠半透明会把图层退化成离屏合成，整屏重绘；
+//   240×320 上这就是肉眼可见的卡顿。徽章、选中行这类"淡色底"用量固定，
+//   直接算出实色最省事，也保证与卡片底不会因为父对象透明度变化而偏色。
+//
+// 计算基准：目标色 over UI_CARD(#121A26) @12%，选中行 @10%。
+// 换卡片底色就必须重算这几个值，否则徽章会浮在"另一套灰"上。
+#define UI_ACC_BG 0x173131       // 绿：允许 / 完成
+#define UI_INFO_BG 0x192D40      // 蓝：运行中
+#define UI_WARN_BG 0x2E2C2C      // 琥珀：待审批
+#define UI_ERR_BG 0x2E222D       // 红：拒绝 / 错误
+#define UI_DIM_BG 0x1B2430       // 灰：空闲
+#define UI_ROW_SEL 0x162D2F      // 选中行底（绿 10%）：明显亮于卡片，小屏才看得出
+
+// ── 圆角阶（v2.0，与 docs/09 §1 一一对应）─────────────────────────────────
+//
+// ★ 只允许用这几档，不要就地写 7、11、13 这种数。
+//   圆角在 240px 宽的屏上是"一眼层级"，随手取值会让相邻卡片看起来
+//   不是同一套设计；统一阶之后，逐页改造也不必每页重新决定。
+//   99 = 药丸（LVGL 里半径大于半高即自动收成药丸）。
+#define UI_R_XS 4               // 键帽内 / 小方块
+#define UI_R_SM 10              // 列表行
+#define UI_R_CARD 14            // 卡片（底栏卡、次卡）
+#define UI_R_LG 16              // 大卡 / 浮层（状态卡、Toast）
+#define UI_R_PILL 99            // 药丸（徽章、主按钮）
 
 // ── 字体 ──────────────────────────────────────────────────────────────────
 //
@@ -90,36 +144,109 @@ extern const lv_font_t app_ui_font_xl;
 #define UI_LINE_H_CJK 24        // app_ui_font_cjk.line_height（20px 字号，字形高 22）
 #define UI_GLYPH_H_CJK 22
 #define UI_LINE_H_XL 38         // app_ui_font_xl.line_height
+// 16px 中文的行高。用在底栏、键帽提示这类"要塞更多字"的地方：
+// 20px 一行约 10 个汉字，16px 每行约 13 个，行高 20px。
+#define UI_LINE_H_CJK16 20
 #define UI_TEXT_LINE_SPACE 4    // ui_theme_text 默认行间距
 #define UI_TEXT_PITCH_CJK (UI_LINE_H_CJK + UI_TEXT_LINE_SPACE)   // 多行行距 = 28
 
 // ── 版面规格（安全区坐标，由 tools/verify-layout.py 验证）────────────────
 //
-// 精简版的纵向预算（安全区 220×300）：
-//     状态条   0 .. 28    高 28   链路色块 + 应用名（24px 行框居中）
-//     分隔线        28
-//     状态主体 29 .. 240  高 211  状态大字 + 补充说明（占满，让状态成为视觉主体）
-//     分隔线        241
-//     底栏   242 .. 298   高 56   两行按键提示：行框 24 + 行间隙 4，上下各留 2
-//     下边距 298 .. 300   高 2
+// v2.0 纵向预算（安全区 220×300）——**圆角卡片版**：
+//     状态条      0 .. 22    高 22   信号格 + 应用名 + 电量（直接坐在页面底上）
+//     间隙         22 .. 30   高 8
+//     状态卡     30 .. 212    高 182  R16 + 1px 描边，卡内：徽章/计时/大字/提示
+//     间隙        212 .. 220  高 8
+//     底栏卡    220 .. 296    高 76  R14 + 1px 描边，两行提示 + 26×1 发丝线
+//     下边距    296 .. 300    高 4
+//
+// ★ 旧版是「状态条 28 / 状态主体 211（分隔线夹住）/ 底栏 56」的硬边三段式。
+//   换成卡片之后**中间的空隙本身承担了分隔作用**，不再需要 1px 分隔线；
+//   状态卡与底栏卡之间的 8px 缝比任何线条都清楚地说明"这是两块东西"。
+//
+// ★ 状态卡高 182 是**算出来的**，不是拍的：见下面 UI_STATE_HINT_H 的推导。
 #define UI_STATUSBAR_Y 0
-#define UI_STATUSBAR_H 28
-#define UI_FOOTER_H 56
-#define UI_FOOTER_Y (UI_H - UI_FOOTER_H - 2)    // = 242
-#define UI_BODY_Y (UI_STATUSBAR_H + 1)          // = 29
-#define UI_BODY_H (UI_FOOTER_Y - UI_BODY_Y - 2) // = 211
+#define UI_STATUSBAR_H 22
+#define UI_CARD_GAP 8                                   // 卡片之间的缝
+#define UI_FOOTER_H 76
+#define UI_FOOTER_Y (UI_H - UI_FOOTER_H - 4)            // = 220（下边距 4）
+#define UI_STATE_CARD_Y (UI_STATUSBAR_H + UI_CARD_GAP)  // = 30
+#define UI_STATE_CARD_H (UI_FOOTER_Y - UI_CARD_GAP - UI_STATE_CARD_Y) // = 182
 
-// 状态主体内部（相对色块左上角）
-//     状态大字 36 .. 74    XL 行框 38，"偏上放置"给下方说明留呼吸
-//     补充说明 84 .. 164   最多 3 行（超出省略号），绝不允许长标题压到底栏
-#define UI_STATE_TEXT_Y 36
-#define UI_STATE_HINT_Y (UI_STATE_TEXT_Y + UI_LINE_H_XL + 10)   // = 84
-#define UI_STATE_HINT_LINES 3
-#define UI_STATE_HINT_H (UI_STATE_HINT_LINES * UI_TEXT_PITCH_CJK - UI_TEXT_LINE_SPACE) // = 80
+// ── 状态条横排布局（四个元素**统一 16px 思源黑体**）──────────────────────
+//     信号格     0 .. 18     4 格递增，圆端
+//     应用名    25 .. 91     16px "AI 通行证" 实宽 65.8（框宽 73）
+//     当前时间 102 .. 146    16px "20:17" 实宽 39.6，右对齐
+//     电量百分比 150 .. 194   16px "100%" 实宽 41.1，右对齐
+//   （缝 6） 电池外壳 198 .. 218   20 宽 +（缝 4）2px 正极凸起贴右缘
+//
+// ★ 框宽比实宽各多留 2px（40→42、42→44）：adv_w 是 1/16 像素的定点数，
+//   正好相等时四舍五入会差半个像素，宁可多给 2px 也不要在满电/整点时裁掉半个字形。
+//
+// ★ 为什么必须**同一款字体**（这条是踩坑记录）：
+//   状态条原先应用名用 16px 思源、时间与电量用 8px 点阵，用户一眼看出
+//   "大小不统一、没对齐"。看起来 8px 是被"220px 放不下 16px"逼的 ——
+//   我据此算出 "全 16px 要 250px，必须缩文案" 并让用户选了缩文案的方案，
+//   **这个结论是错的**：算错的地方是拿**点阵字体**的度量（Press Start 2P
+//   在 16px 下每个字符前进 16px，5 字符 "20:17" 就是 80px，3 字符 "100"
+//   是 48px）去估**比例字体**。
+//   思源黑体 16px 是比例字体：数字 8.81、冒号 4.31、百分号 14.63，
+//   "20:17" 只有 39.6，"100%" 只有 41.1 —— 四个元素全 16px 只占 186px，
+//   220 的安全区还余下 11px 呼吸，**文案一个字都不用缩**。
+//   教训：字宽必须从生成字体的真实 adv_w 取（tools/verify-layout.py 的
+//   text_width 就是干这个的），不能按"字数 × 字号"心算等宽。
+//
+// ★ 时间为什么放电量左边：用户明确要求；且右侧没有余量（贴右缘的是电池
+//   外壳与正极凸起，再往外就是圆角）。
+// ★ 三者共用 UI_FONT_CJK16 的另一个好处：同一个字体里汉字与数字基线一致，
+//   纵向不用各自调 y —— 全部 UI_CENTER_Y(22, 20) = 1。
+#define UI_APPNAME_X 25                                     // 信号格 18 + 间距 7
+#define UI_BATT_W 44                                        // "100%" 实宽 41.1 + 2 缓冲
+#define UI_BATT_GAP 4                                       // 与电池外壳的缝
+#define UI_BATT_X (UI_W - 22 - UI_BATT_GAP - UI_BATT_W)      // = 150（右缘 194）
+#define UI_CLOCK_W 42                                       // "20:17" 实宽 39.6 + 2 缓冲
+#define UI_CLOCK_GAP 6                                      // 与百分比的呼吸缝
+#define UI_CLOCK_X (UI_BATT_X - UI_CLOCK_GAP - UI_CLOCK_W)   // = 102（右缘 144）
 
-// 底栏两行提示的行框位置（只显示一行时用 UI_CENTER_Y 整体居中）
-#define UI_FOOTER_LINE1_Y 2
-#define UI_FOOTER_LINE2_Y (UI_FOOTER_LINE1_Y + UI_LINE_H_CJK + 4)   // = 30
+// 卡片左右内边距（设计稿 §3：徽章 left14、提示 right14）
+#define UI_CARD_PAD_X 14
+
+// 状态卡内部（相对卡片左上角）
+//     徽章     14 .. 36     高 22（药丸）
+//     XL 大字  62 .. 100    XL 行框 38
+//     提示    110 .. 162    最多 2 行
+//
+// ★ 徽章为什么是 22 而不是设计稿写的 18：
+//   18px 是按 11px 西文算的。设备上中文最小可用字号是 16px（行高 20），
+//   18px 的胶囊装 20px 行框会裁字 —— 中文被裁就是方块（见文件头教训 1）。
+//   宁可徽章高 4px，也不要一个方块。
+#define UI_STATE_CHIP_Y 14
+#define UI_STATE_CHIP_H 22
+#define UI_STATE_CHIP_PAD_X 9       // 药丸内左右留白
+#define UI_STATE_CHIP_DOT 5         // 徽章里的小圆点
+#define UI_STATE_CHIP_GAP 5         // 圆点与文字间距
+#define UI_STATE_TEXT_Y 62
+// 计时贴卡片右上角，与徽章同一行。
+// ★ 15 而不是 14：徽章高 22、内文行框 20，居中后文字盒在 15..35；
+//   计时用同一款 16px 思源（行框 20），对齐到 15 才与徽章里的字**同一基线**。
+//   旧值 13 是配 16px 点阵（行框 16）算的，换字体后必须重算 ——
+//   否则两个 16px 的字看起来一高一低，正是用户说的"没对齐"。
+#define UI_STATE_TIMER_Y 15
+#define UI_STATE_HINT_Y 110
+
+// ★ 提示只给 **2 行**。算一下就知道 3 行放不下：
+//     110 + (3 × 28 − 4) = 190 > 182（卡片高）
+//   主机下发的标题长短不定，多给一行就会压出卡片边界。2 行 + 省略号是上限。
+#define UI_STATE_HINT_LINES 2
+#define UI_STATE_HINT_H (UI_STATE_HINT_LINES * UI_TEXT_PITCH_CJK - UI_TEXT_LINE_SPACE) // = 52
+#define UI_STATE_HINT_W (UI_W - UI_CARD_PAD_X * 2)      // = 192
+
+// 底栏卡内部（两行提示 + 中间 26×1 发丝线）
+//   内容高 = 20 + 8 + 1 + 8 + 20 = 57，卡高 76 → 上下各留 9/10，接近居中
+#define UI_FOOTER_SEP_W 26
+#define UI_FOOTER_LINE1_Y 9
+#define UI_FOOTER_SEP_Y (UI_FOOTER_LINE1_Y + UI_LINE_H_CJK16 + 8)          // = 37
+#define UI_FOOTER_LINE2_Y (UI_FOOTER_SEP_Y + 1 + 8)                        // = 46
 
 // 提示条（浮在状态主体上的短暂通知）
 #define UI_TOAST_H 68
@@ -177,7 +304,7 @@ extern const lv_font_t app_ui_font_xl;
 // ★ 高度必须按**行距**算，不能只按行高：ui_theme_text 默认带 UI_TEXT_LINE_SPACE(4) 行距，
 //   三行需要 3*20 + 2*4 = 68px。早先用 60px 时第三行「长按确认 发送」被裁掉（真机反馈）。
 //   写法与主题里其它多行控件一致：行数 × 行距 − 行距。
-#define UI_LINE_H_CJK16 20
+//   UI_LINE_H_CJK16 已在字体度量一节定义（底栏也要用它算行位置）。
 #define UI_TEXT_PITCH_CJK16 (UI_LINE_H_CJK16 + UI_TEXT_LINE_SPACE)         // = 24
 #define OV_VOICE_KEYS_LINES 3
 #define OV_VOICE_KEYS_H (OV_VOICE_KEYS_LINES * UI_TEXT_PITCH_CJK16 - UI_TEXT_LINE_SPACE)  // = 68
@@ -228,6 +355,43 @@ static inline void ui_theme_box(lv_obj_t *obj, uint32_t bg, uint32_t border)
     ui_theme_rect(obj, bg);
     lv_obj_set_style_border_width(obj, 1, 0);
     lv_obj_set_style_border_color(obj, lv_color_hex(border), 0);
+}
+
+// ── 圆角助手（v2.0）───────────────────────────────────────────────────────
+//
+// ★ 为什么单独开助手而不是各处直接调 lv_obj_set_style_radius：
+//   圆角控件在 LVGL 里还必须同时确认"内边距为 0"和"不裁剪自身"，
+//   漏一个就会出现圆角外露出方角底色（小屏上非常明显）：
+//     · pad_all 非 0 → 圆角内侧多一圈背景色，看着像描边没对齐；
+//     · 仍需 border_width 明确设 0，否则继承主题默认宽度。
+//   把这三件事绑在一个函数里，P3 逐页改造时才不会漏。
+
+// 只给已有对象套圆角（不改底色/描边），用于改造既有的纯色块。
+static inline void ui_theme_round(lv_obj_t *obj, int32_t radius)
+{
+    lv_obj_set_style_radius(obj, radius, 0);
+    lv_obj_set_style_pad_all(obj, 0, 0);
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+}
+
+// 圆角卡片：底色 + 1px 内描边 + 指定圆角。radius 请用 UI_R_* 阶。
+static inline void ui_theme_card(lv_obj_t *obj, uint32_t bg, uint32_t stroke, int32_t radius)
+{
+    ui_theme_round(obj, radius);
+    lv_obj_set_style_bg_color(obj, lv_color_hex(bg), 0);
+    lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(obj, 1, 0);
+    lv_obj_set_style_border_color(obj, lv_color_hex(stroke), 0);
+}
+
+// 药丸标签（状态徽标、"已配对"这类小胶囊）。
+// 半径给 UI_R_PILL，LVGL 会自动收成半圆顶；无描边，由调用方按需再加。
+static inline void ui_theme_pill(lv_obj_t *obj, uint32_t bg)
+{
+    ui_theme_round(obj, UI_R_PILL);
+    lv_obj_set_style_bg_color(obj, lv_color_hex(bg), 0);
+    lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(obj, 0, 0);
 }
 
 // 文本标签（点阵/中文字体）。

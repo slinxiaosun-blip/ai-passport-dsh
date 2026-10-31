@@ -12,6 +12,21 @@
 
 ## Unreleased
 
+- **All four status-bar items now use the same 16px Source Han Sans face.** The app name was
+  16px while the clock and battery percentage were 8px bitmap, so a single 22px row mixed two
+  sizes and two typefaces — reported as "inconsistent size, not aligned". They now share one
+  size and one baseline: bars 0..18 / app name 25..98 / clock 102..144 / battery 150..194 /
+  battery shell 198..220. The old "16px does not fit" conclusion applied **monospace bitmap**
+  metrics (16px per glyph) to a **proportional** face: Source Han Sans advances digits by 8.81
+  and the colon by 4.31, so `20:17` is only 39.6px and `100%` only 41.1px. No copy had to shrink.
+- **The elapsed timer no longer shrinks with runtime.** It used to drop to 8px bitmap past one
+  hour, because `10:23:45` is 128px wide in bitmap and collided with the state chip. At 16px
+  Source Han Sans the same string is 61.5px, so the downgrade and its state variable are gone;
+  `UI_STATE_TIMER_Y` moved 13→15 to sit on the chip's baseline.
+- Added layout modelling for the status-bar clock in `tools/verify-layout.py`, and the clock
+  conversion in `main/app_clock_logic.c` (day wrap, half-hour zones, negative offsets) pinned by
+  `tests/test_app_clock.c`.
+
 ## v1.2.1-dsh-passport - 2026-10-10
 
 - **On-device behavior is identical to `v1.2.0-dsh-passport`.** This release only removes

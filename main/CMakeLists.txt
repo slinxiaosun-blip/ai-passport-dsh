@@ -1,8 +1,16 @@
-if(CONFIG_APP_ENABLE_SCREENSHOT)
+# 截图服务默认关掉：整屏缓冲要 150KB 静态 BSS，而本机可用堆只有 166KB、
+# 最大连续块 113KB。带上它之后笔记固件连 24KB 的包缓冲都申请不到。
+# 需要截图时单独编一版（-DAP_SCREENSHOT=ON，不带 Wi-Fi）。
+option(AP_SCREENSHOT "编译串口截图服务（会占 150KB DRAM）" OFF)
+if(AP_SCREENSHOT)
     set(APP_SCREENSHOT_SRC "app_screenshot.c")
 else()
     set(APP_SCREENSHOT_SRC "")
 endif()
+
+# 应用入口固定为 AI Passport × DSH 联机界面（passport_app_main）。
+# 2026-10-31：notes（笔记阅读器）与 lightning（闪电说外挂）两个 app 已移除，
+# 源码在 .workbuddy/removed-2026-10-31/ 留底，需要时再捡回来。
 
 idf_component_register(
     SRCS "main.c"
@@ -14,6 +22,7 @@ idf_component_register(
          "app_pair_logic.c"
          "app_pair.c"
          "app_conn_logic.c"
+         "app_clock_logic.c"
          "app_ui.c"
          "app_screens.c"
          "app_alert.c"
@@ -40,7 +49,7 @@ idf_component_register(
     INCLUDE_DIRS "."
     # 串口截屏默认关闭（整屏缓冲 150KB 放不下，见 main/Kconfig.projbuild）
 
-    REQUIRES bsp bt esp_driver_usb_serial_jtag esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash
+    REQUIRES bsp bt esp_driver_usb_serial_jtag esp_event esp_hw_support esp_netif esp_timer esp_wifi esp_http_server nvs_flash spiffs
 )
 
 # ── 固件版本 ────────────────────────────────────────────────────────────────
@@ -68,3 +77,4 @@ if(NOT AP_VERSION)
 endif()
 target_compile_definitions(${COMPONENT_LIB} PRIVATE AP_FIRMWARE_VERSION="${AP_VERSION}")
 message(STATUS "固件版本：${AP_VERSION}（基底来自 version.txt，可用 -DAP_VERSION=… 覆盖）")
+message(STATUS "应用入口：AI Passport × DSH（桌面挂件界面）")

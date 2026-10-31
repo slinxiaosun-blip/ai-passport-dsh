@@ -403,6 +403,28 @@ static void handle_task_state(const char *json)
     ap_json_str(json, "state", state, sizeof(state));
     ap_json_str(json, "title", title, sizeof(title));
 
+    // 运行计时：主机播种「已运行毫秒数」而不是「开始时间戳」——
+    // 设备没有 RTC，时间戳对不上；差值天然免疫时钟不同步。
+    // 字段缺失（旧版插件）时 elapsed_ms 保持 -1，设备不显示计时。
+    long elapsed_ms = -1;
+    if (ap_json_num(json, "elapsedMs", &elapsed_ms) && elapsed_ms < 0) {
+        elapsed_ms = -1;
+    }
+    // ★ 主机还会随包下发 sinceReliable（起点是否来自真实的 turn/start）。
+    //   设备端**故意不读**：按设计稿要求，计时只显示 `MM:SS` / `H:MM:SS` 纯格式，
+    //   不加 `~` 之类前缀。可信度由主机负责 —— 它给不出可信基准时就不下发
+    //   elapsedMs（设备不显示计时），而不是下发一个含糊的数让设备打补丁。
+
+    // 主机墙钟（可选）：设备没有 RTC，状态条上那个 HH:MM 只能由主机给。
+    // 两个字段必须成对出现才采用 —— 只有 epoch 没有时区会显示成 UTC，
+    // 那是"看起来对、其实差 8 小时"的错误，比 `--:--` 更糟。
+    long host_epoch_sec = 0;
+    long host_tz_min = 0;
+    if (ap_json_num(json, "hostEpochSec", &host_epoch_sec) &&
+        ap_json_num(json, "hostTzOffsetMin", &host_tz_min)) {
+        app_ui_set_host_clock(host_epoch_sec, (int)host_tz_min);
+    }
+
     ap_task_state_t st = AP_TASK_STATE_IDLE;
     if (strcmp(state, "running") == 0)               st = AP_TASK_STATE_RUNNING;
     else if (strcmp(state, "waiting_approval") == 0) st = AP_TASK_STATE_WAITING_APPROVAL;
@@ -416,11 +438,11 @@ static void handle_task_state(const char *json)
         app_screens_hide(AP_SCREEN_SETTINGS);
         ESP_LOGI(TAG, "任务状态变化，自动收起系统设置页");
     }
-    app_ui_set_task_state(st, title);
+    app_ui_set_task_state(st, title, elapsed_ms);
 
     if (changed) {
-        ESP_LOGI(TAG, "任务状态 -> %s%s%s", state,
-                 title[0] ? "（" : "", title[0] ? title : "");
+        ESP_LOGI(TAG, "任务状态 -> %s%s%s%s", state,
+                 title[0] ? "（" : "", title[0] ? title : "", title[0] ? "）" : "");
     }
 
     // 只在**状态真的变化**时响，避免主机重复推送同一状态导致反复响铃

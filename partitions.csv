@@ -1,4 +1,11 @@
 # Name,   Type, SubType, Offset,   Size,     Flags
+# 8MB flash。app 给 4.5MB（Wi-Fi 栈进来后约 2.7MB，留足余量），
+# 剩下的 3.5MB 给笔记存储（100 篇 × ~15KB ≈ 1.5MB，余量一倍）。
+#
+# 为什么用 SPIFFS 而不是 LittleFS：LittleFS 要下载托管组件（需要外网），
+# 而 SPIFFS 是 IDF 内置的。100 个平铺小文件的掉电一致性 SPIFFS 稍差，
+# 但每篇都是「写临时文件 → rename」的原子替换，够用。
 nvs,      data, nvs,     0x9000,   0x6000,
 phy_init, data, phy,     0xf000,   0x1000,
-factory,  app,  factory, 0x10000,  0x7f0000,
+factory,  app,  factory, 0x10000,  0x480000,
+storage,  data, spiffs,  0x490000, 0x370000,

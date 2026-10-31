@@ -72,6 +72,10 @@ static const char *TAG = "app_shot";
 //
 // 静态预留还有个额外好处：地址在编译期就定死，不受运行时碎片影响，
 // 每次抓图都必然成功（上游文档也是同一结论）。
+// 静态预留整屏缓冲。实测这台机器的堆可用总量只有 166KB，
+// 最大连续块 113KB —— 150KB 的连续申请**永远不可能成功**，
+// 所以只能静态占 BSS（链接期分配，不要求连续），
+// 代价从 LVGL 内存池里省（见 sdkconfig 的 LV_MEM_SIZE_KILOBYTES）。
 static uint8_t s_screen_buf[SHOT_BYTES] __attribute__((aligned(64)));
 static lv_draw_buf_t s_draw_buf;
 
@@ -243,9 +247,8 @@ esp_err_t app_screenshot_start(void)
         return ESP_ERR_NO_MEM;
     }
 
-    // 初始化描述符，指向静态预留的整屏缓冲（完全不经过 LVGL 堆）。
     if (lv_draw_buf_init(&s_draw_buf, BSP_LCD_W, BSP_LCD_H, LV_COLOR_FORMAT_RGB565,
-                         BSP_LCD_W * 2, s_screen_buf, sizeof(s_screen_buf)) != LV_RESULT_OK) {
+                         BSP_LCD_W * 2, s_screen_buf, SHOT_BYTES) != LV_RESULT_OK) {
         ESP_LOGE(TAG, "lv_draw_buf_init 失败");
         return ESP_FAIL;
     }

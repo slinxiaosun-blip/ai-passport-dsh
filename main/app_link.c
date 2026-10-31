@@ -434,10 +434,16 @@ static void handle_control_message(const char *json)
         const bool has_token = ap_json_str(json, "token", token, sizeof(token));
         if (ap_pair_is_paired()) {
             if (!has_token || !ap_pair_host_token_ok(token)) {
-                // 已配对，但对方没带/带错 token：不放行业务消息，让主机重新配对
+                // 已配对，但对方没带/带错 token：不放行业务消息，让主机重新配对。
+                // ★ 这里必须把配对码亮出来。设备自认为"已配对"，不会走下面那条
+                //   未配对分支，别处也没有人负责显示码；主机那边只会提示"需要
+                //   重新配对"，用户却看不到码 —— 真机踩过的死锁。
+                //   ap_pair_begin 并不要求设备处于未配对状态，凭这枚码就能换发
+                //   新 token，所以亮码即可，不必先 reset。
                 s_host_token_ok = false;
-            ESP_LOGW(TAG, "主机 token 不匹配（%s），回 pair.required",
+                ESP_LOGW(TAG, "主机 token 不匹配（%s），回 pair.required 并显示配对码",
                          has_token ? "值不符" : "缺失");
+                app_screens_post_pair_code(ap_pair_code_str(), ap_pair_device_id());
                 send_control_short(AP_MSG_PAIR_REQUIRED, 0, "\"reason\":\"token\"");
                 return;
             }

@@ -83,7 +83,7 @@ static lv_obj_t *s_balance_lines;
 static lv_obj_t *s_approval;
 static lv_obj_t *s_appr_tool;
 static lv_obj_t *s_appr_option[APPR_OPTIONS];
-static lv_obj_t *s_appr_opt_bar[APPR_OPTIONS];
+static lv_obj_t *s_appr_opt_dot[APPR_OPTIONS];
 static lv_obj_t *s_appr_opt_text[APPR_OPTIONS];
 static lv_obj_t *s_appr_hint;
 
@@ -136,12 +136,12 @@ static lv_obj_t *s_voice_foot_rule;   // 结果卡不用共用底栏，这条分
 static lv_obj_t *s_settings;
 static lv_obj_t *s_settings_hint;
 static lv_obj_t *s_set_rows[AP_SETTINGS_ITEM_COUNT];
-static lv_obj_t *s_set_bar[AP_SETTINGS_ITEM_COUNT];
+static lv_obj_t *s_set_dot[AP_SETTINGS_ITEM_COUNT];
 static lv_obj_t *s_set_text[AP_SETTINGS_ITEM_COUNT];
 static int s_set_cursor = 0;
 // 设置页最后一行是「配对」（不是普通档位项，单独处理）
 static lv_obj_t *s_set_pair_row;
-static lv_obj_t *s_set_pair_bar;
+static lv_obj_t *s_set_pair_dot;
 static lv_obj_t *s_set_pair_text;
 
 // ── 配对码页（未配对的主机接入时弹出）──
@@ -182,7 +182,7 @@ static lv_obj_t *s_qvoice_text;
 static lv_obj_t *s_qvoice_hint;
 static lv_obj_t *s_qvoice_title;
 static lv_obj_t *s_q_rows[Q_ROW_MAX];
-static lv_obj_t *s_q_row_bar[Q_ROW_MAX];
+static lv_obj_t *s_q_row_dot[Q_ROW_MAX];
 static lv_obj_t *s_q_row_text[Q_ROW_MAX];
 static lv_obj_t *s_q_hint;
 static lv_obj_t *s_q_title;
@@ -256,10 +256,56 @@ static uint32_t now_ms(void)
 static lv_obj_t *hrule(lv_obj_t *parent, int y)
 {
     lv_obj_t *line = lv_obj_create(parent);
-    ui_theme_rect(line, UI_LINE);
+    ui_theme_rect(line, UI_HAIR);   // v2.0：发丝线比描边更弱，只用来分隔不加框
     lv_obj_set_pos(line, 0, y);
     lv_obj_set_size(line, UI_W, 1);
     return line;
+}
+
+/**
+ * 行卡选中态：**三重冗余**（色底 + 2px 描边 + 圆点）。
+ *
+ * ★ 为什么不是"只换背景色"：
+ *   小屏上 UI_ROW_SEL 与 UI_CARD 的亮度差在强光或低背光下几乎不可辨。
+ *   三条线索互为备份 —— 背光调到最低、或者色觉不敏感时，仍看得出光标在哪。
+ *   这也正是设计稿 §5 说的"选中态三重冗余"。
+ *
+ * ★ 这个函数必须由**所有**列表行共用：追问页、审批选项、设置行都是同一套观感，
+ *   各写一份迟早会出现"这里 2px 那里 1px"的漂移，而它在小屏上像手抖。
+ */
+static void row_set_selected(lv_obj_t *row, lv_obj_t *dot, lv_obj_t *text, bool sel,
+                             uint32_t accent)
+{
+    if (!row) return;
+    lv_obj_set_style_bg_color(row, lv_color_hex(sel ? UI_ROW_SEL : UI_CARD), 0);
+    lv_obj_set_style_border_width(row, sel ? 2 : 1, 0);
+    // 描边跟着行自己的语义色走：审批页里「拒绝」被选中时是红框，
+    // 不是绿框 —— 否则"选中红色危险项"看起来像被允许了。
+    lv_obj_set_style_border_color(row, lv_color_hex(sel ? accent : UI_STROKE), 0);
+    if (dot) {
+        lv_obj_set_style_bg_color(dot, lv_color_hex(sel ? accent : UI_DIM), 0);
+        lv_obj_set_style_bg_opa(dot, sel ? LV_OPA_COVER : LV_OPA_50, 0);
+    }
+    if (text) lv_obj_set_style_text_color(text, lv_color_hex(sel ? UI_FG : UI_SUB), 0);
+}
+
+/**
+ * 列表行外框：R10 圆角卡 + 1px 描边，并建好左侧的选中圆点。
+ *
+ * 旧版是"整行硬边 + 4px 左侧色条"。圆角之后色条会露出方角，改成圆点；
+ * 文字相应右移到 x=24（圆点 12..18 + 6px 间隙）。
+ */
+#define ROW_DOT_SIZE 6
+#define ROW_DOT_X 12
+#define ROW_TEXT_X 24
+
+static lv_obj_t *row_dot(lv_obj_t *row, int row_h)
+{
+    lv_obj_t *dot = lv_obj_create(row);
+    ui_theme_pill(dot, UI_DIM);
+    lv_obj_set_size(dot, ROW_DOT_SIZE, ROW_DOT_SIZE);
+    lv_obj_set_pos(dot, ROW_DOT_X, (row_h - ROW_DOT_SIZE) / 2);
+    return dot;
 }
 
 static lv_obj_t *make_overlay(const char *title, lv_obj_t **out_hint, lv_obj_t **out_title,
@@ -306,6 +352,13 @@ void app_screens_create(void)
     lv_obj_t *bh = NULL;
     s_balance = make_overlay("DeepSeek 余额", &bh, NULL, NULL);
 
+    // 总额大卡（R14）：余额页唯一的主角，单独一张卡把它框出来。
+    // 卡 36..72，总额文字 40..64 —— 上留 4、下留 8，视觉重心略偏上（数字读起来稳）。
+    lv_obj_t *bal_card = lv_obj_create(s_balance);
+    ui_theme_card(bal_card, UI_CARD, UI_STROKE, UI_R_CARD);
+    lv_obj_set_pos(bal_card, 0, OV_TITLE_H + 8);
+    lv_obj_set_size(bal_card, UI_W, 36);
+
     s_balance_total = ui_theme_text(s_balance, "--", UI_FONT_CJK, UI_ACCENT);
     lv_obj_set_pos(s_balance_total, UI_PAD, OV_BAL_TOTAL_Y);
     lv_obj_set_width(s_balance_total, UI_W - UI_PAD * 2);
@@ -334,15 +387,15 @@ void app_screens_create(void)
     //   根因是 LVGL 的 WRAP 标签会随文本**自动长高**，直接给标签设高度根本限制不住它，
     //   长文本就一路压到下面三行提示上。容器把正文裁在自己的区域里，滚动也落在容器上。
     s_voice_box = lv_obj_create(s_voice);
-    ui_theme_rect(s_voice_box, UI_BG);
+    ui_theme_card(s_voice_box, UI_CARD, UI_STROKE, UI_R_CARD);
     lv_obj_set_pos(s_voice_box, 0, OV_VOICE_TEXT_Y);
     lv_obj_set_size(s_voice_box, UI_W, OV_VOICE_TEXT_H);
     lv_obj_set_scroll_dir(s_voice_box, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_voice_box, LV_SCROLLBAR_MODE_AUTO);
 
     s_voice_text = ui_theme_text(s_voice_box, "", UI_FONT_CJK, UI_FG);
-    lv_obj_set_pos(s_voice_text, UI_PAD, 0);
-    lv_obj_set_width(s_voice_text, UI_W - UI_PAD * 2 - 6);   // 6px 留给滚动条
+    lv_obj_set_pos(s_voice_text, 12, 10);
+    lv_obj_set_width(s_voice_text, UI_W - 12 - 10 - 6);       // 右侧 10 内边距 + 6 滚动条
     lv_obj_set_height(s_voice_text, LV_SIZE_CONTENT);        // 高度随文本，由容器裁剪
     lv_obj_set_style_text_line_space(s_voice_text, UI_TEXT_LINE_SPACE, 0);
     lv_label_set_long_mode(s_voice_text, LV_LABEL_LONG_WRAP);
@@ -381,22 +434,40 @@ void app_screens_create(void)
     for (int i = 0; i < Q_ROW_MAX; i++) {
         const int y = i * (OV_Q_ROW_H + OV_Q_ROW_GAP);
         lv_obj_t *row = lv_obj_create(q_list);
-        ui_theme_rect(row, UI_BG);
+        ui_theme_card(row, UI_CARD, UI_STROKE, UI_R_SM);
         lv_obj_set_pos(row, UI_PAD, y);
         lv_obj_set_size(row, UI_W - UI_PAD * 2, OV_Q_ROW_H);
 
-        s_q_row_bar[i] = lv_obj_create(row);
-        ui_theme_rect(s_q_row_bar[i], UI_DIM);
-        lv_obj_set_pos(s_q_row_bar[i], 0, 0);
-        lv_obj_set_size(s_q_row_bar[i], 4, OV_Q_ROW_H);
+        // 左侧 4px 色条改圆点：圆角行卡里一条方色条会从圆角处露角
+        s_q_row_dot[i] = row_dot(row, OV_Q_ROW_H);
 
-        s_q_row_text[i] = ui_theme_text(row, "", UI_FONT_CJK, UI_DIM);
-        lv_obj_set_pos(s_q_row_text[i], 12, UI_CENTER_Y(OV_Q_ROW_H, UI_LINE_H_CJK));
+        s_q_row_text[i] = ui_theme_text(row, "", UI_FONT_CJK, UI_SUB);
+        lv_obj_set_pos(s_q_row_text[i], ROW_TEXT_X, UI_CENTER_Y(OV_Q_ROW_H, UI_LINE_H_CJK));
+        lv_obj_set_width(s_q_row_text[i], UI_W - UI_PAD * 2 - ROW_TEXT_X - 8);
+        lv_label_set_long_mode(s_q_row_text[i], LV_LABEL_LONG_DOT);
         s_q_rows[i] = row;
     }
 
     // ══ 语音输入页（自定义答案：独立一页，可放弃返回选择界面）══
     s_qvoice = make_overlay("语音输入", &s_qvoice_hint, &s_qvoice_title, NULL);
+
+    // 圆形按钮（设计稿 §4「语音输入 · 圆形声波按钮」）：外圈细描边 + 中心实心点。
+    // 纯装饰，不参与按键命中 —— 真正的交互仍是"按住确定说话"，
+    // 所以这里不能做成看起来可以点的按钮（会误导用户去点屏幕）。
+    {
+        const int d = 64;
+        lv_obj_t *ring = lv_obj_create(s_qvoice);
+        ui_theme_pill(ring, UI_ACC_BG);
+        lv_obj_set_size(ring, d, d);
+        lv_obj_set_pos(ring, (UI_W - d) / 2, 24);
+        lv_obj_set_style_border_width(ring, 2, 0);
+        lv_obj_set_style_border_color(ring, lv_color_hex(UI_ACCENT), 0);
+
+        lv_obj_t *core = lv_obj_create(ring);
+        ui_theme_pill(core, UI_ACCENT);
+        lv_obj_set_size(core, 18, 18);
+        lv_obj_align(core, LV_ALIGN_CENTER, 0, 0);
+    }
 
     s_qvoice_text = ui_theme_text(s_qvoice, "按住确定说话", UI_FONT_CJK, UI_FG);
     lv_obj_set_pos(s_qvoice_text, 0, OV_QV_TEXT_Y);
@@ -419,21 +490,18 @@ void app_screens_create(void)
     // 倒计时：条 + 秒数，放在选项上方
     // 倒计时文本使用 UI_FONT_CJK
 
-    // 两个选项：左侧色条 + 文字
+    // 两个选项：圆角行卡 + 左侧圆点 + 文字（选中态由 row_set_selected 统一处理）
     for (int i = 0; i < APPR_OPTIONS; i++) {
         const int y = OV_APPR_OPTS_Y + i * (OV_APPR_OPT_H + OV_APPR_OPT_GAP);
         lv_obj_t *opt = lv_obj_create(s_approval);
-        ui_theme_rect(opt, UI_BG);
+        ui_theme_card(opt, UI_CARD, UI_STROKE, UI_R_SM);
         lv_obj_set_pos(opt, UI_PAD, y);
         lv_obj_set_size(opt, UI_W - UI_PAD * 2, OV_APPR_OPT_H);
 
-        s_appr_opt_bar[i] = lv_obj_create(opt);
-        ui_theme_rect(s_appr_opt_bar[i], UI_DIM);
-        lv_obj_set_pos(s_appr_opt_bar[i], 0, 0);
-        lv_obj_set_size(s_appr_opt_bar[i], 4, OV_APPR_OPT_H);
+        s_appr_opt_dot[i] = row_dot(opt, OV_APPR_OPT_H);
 
-        s_appr_opt_text[i] = ui_theme_text(opt, s_options[i].label, UI_FONT_CJK, UI_DIM);
-        lv_obj_set_pos(s_appr_opt_text[i], 12, UI_CENTER_Y(OV_APPR_OPT_H, UI_LINE_H_CJK));
+        s_appr_opt_text[i] = ui_theme_text(opt, s_options[i].label, UI_FONT_CJK, UI_SUB);
+        lv_obj_set_pos(s_appr_opt_text[i], ROW_TEXT_X, UI_CENTER_Y(OV_APPR_OPT_H, UI_LINE_H_CJK));
 
         s_appr_option[i] = opt;
     }
@@ -444,19 +512,16 @@ void app_screens_create(void)
     for (int i = 0; i < AP_SETTINGS_ITEM_COUNT; i++) {
         const int y = OV_SET_ROWS_Y + i * (OV_Q_ROW_H + OV_Q_ROW_GAP);
         lv_obj_t *row = lv_obj_create(s_settings);
-        ui_theme_rect(row, UI_BG);
+        ui_theme_card(row, UI_CARD, UI_STROKE, UI_R_SM);
         lv_obj_set_pos(row, UI_PAD, y);
         lv_obj_set_size(row, UI_W - UI_PAD * 2, OV_Q_ROW_H);
         s_set_rows[i] = row;
 
-        s_set_bar[i] = lv_obj_create(row);
-        ui_theme_rect(s_set_bar[i], UI_LINE);
-        lv_obj_set_pos(s_set_bar[i], 0, 0);
-        lv_obj_set_size(s_set_bar[i], 4, OV_Q_ROW_H);
+        s_set_dot[i] = row_dot(row, OV_Q_ROW_H);
 
         s_set_text[i] = ui_theme_text(row, "", UI_FONT_CJK, UI_FG);
-        lv_obj_set_pos(s_set_text[i], 12, UI_CENTER_Y(OV_Q_ROW_H, UI_LINE_H_CJK));
-        lv_obj_set_width(s_set_text[i], UI_W - UI_PAD * 2 - 20);
+        lv_obj_set_pos(s_set_text[i], ROW_TEXT_X, UI_CENTER_Y(OV_Q_ROW_H, UI_LINE_H_CJK));
+        lv_obj_set_width(s_set_text[i], UI_W - UI_PAD * 2 - ROW_TEXT_X - 8);
         lv_label_set_long_mode(s_set_text[i], LV_LABEL_LONG_DOT);
     }
 
@@ -467,25 +532,30 @@ void app_screens_create(void)
     {
         const int y = OV_SET_ROWS_Y + AP_SETTINGS_ITEM_COUNT * (OV_Q_ROW_H + OV_Q_ROW_GAP);
         lv_obj_t *row = lv_obj_create(s_settings);
-        ui_theme_rect(row, UI_BG);
+        ui_theme_card(row, UI_CARD, UI_STROKE, UI_R_SM);
         lv_obj_set_pos(row, UI_PAD, y);
         lv_obj_set_size(row, UI_W - UI_PAD * 2, OV_SET_PAIR_H);
         s_set_pair_row = row;
 
-        s_set_pair_bar = lv_obj_create(row);
-        ui_theme_rect(s_set_pair_bar, UI_LINE);
-        lv_obj_set_pos(s_set_pair_bar, 0, 0);
-        lv_obj_set_size(s_set_pair_bar, 4, OV_SET_PAIR_H);
+        s_set_pair_dot = row_dot(row, OV_SET_PAIR_H);
 
         s_set_pair_text = ui_theme_text(row, "", UI_FONT_CJK, UI_FG);
-        lv_obj_set_pos(s_set_pair_text, 12, 0);
-        lv_obj_set_size(s_set_pair_text, UI_W - UI_PAD * 2 - 20, OV_SET_PAIR_H);
+        lv_obj_set_pos(s_set_pair_text, ROW_TEXT_X, 0);
+        lv_obj_set_size(s_set_pair_text, UI_W - UI_PAD * 2 - ROW_TEXT_X - 8, OV_SET_PAIR_H);
         lv_label_set_long_mode(s_set_pair_text, LV_LABEL_LONG_DOT);
     }
 
     // ══ 配对码页 ══
     s_pair = make_overlay("配对", &s_pair_sub_text, NULL, NULL);
     if (s_pair_sub_text) lv_label_set_text(s_pair_sub_text, "长按确定关闭");
+
+    // 配对码大卡（R16）：整页只有一件事，把码框进卡里它才"站得住"。
+    // 卡 44..140，码文字 64..88（20px 中文行框），上下各留 20px 呼吸。
+    lv_obj_t *pair_card = lv_obj_create(s_pair);
+    ui_theme_card(pair_card, UI_CARD, UI_STROKE, UI_R_LG);
+    lv_obj_set_pos(pair_card, 0, OV_SET_ROWS_Y);
+    lv_obj_set_size(pair_card, UI_W, 96);
+
     s_pair_code_text = ui_theme_text(s_pair, "", UI_FONT_CJK, UI_ACCENT);
     lv_obj_set_pos(s_pair_code_text, UI_PAD, OV_SET_ROWS_Y + 20);
     lv_obj_set_width(s_pair_code_text, UI_W - UI_PAD * 2);
@@ -511,9 +581,9 @@ void app_screens_destroy(void)
     s_qvoice = NULL;
     s_settings = NULL; s_settings_hint = NULL;
     s_pair = NULL; s_pair_code_text = NULL; s_pair_sub_text = NULL;
-    s_set_pair_row = NULL; s_set_pair_bar = NULL; s_set_pair_text = NULL;
+    s_set_pair_row = NULL; s_set_pair_dot = NULL; s_set_pair_text = NULL;
     for (int i = 0; i < AP_SETTINGS_ITEM_COUNT; i++) {
-        s_set_rows[i] = NULL; s_set_bar[i] = NULL; s_set_text[i] = NULL;
+        s_set_rows[i] = NULL; s_set_dot[i] = NULL; s_set_text[i] = NULL;
     }
     s_balance_total = NULL; s_balance_lines = NULL;
     s_appr_tool = NULL; s_appr_hint = NULL;
@@ -522,10 +592,10 @@ void app_screens_destroy(void)
     s_q_text = NULL; s_q_hint = NULL;
     s_qvoice_text = NULL; s_qvoice_hint = NULL;
     for (int i = 0; i < APPR_OPTIONS; i++) {
-        s_appr_option[i] = NULL; s_appr_opt_bar[i] = NULL; s_appr_opt_text[i] = NULL;
+        s_appr_option[i] = NULL; s_appr_opt_dot[i] = NULL; s_appr_opt_text[i] = NULL;
     }
     for (int i = 0; i < Q_ROW_MAX; i++) {
-        s_q_rows[i] = NULL; s_q_row_bar[i] = NULL; s_q_row_text[i] = NULL;
+        s_q_rows[i] = NULL; s_q_row_dot[i] = NULL; s_q_row_text[i] = NULL;
     }
     s_current = AP_SCREEN_NONE;
 }
@@ -837,12 +907,8 @@ static void refresh_question_rows(void)
         }
         lv_obj_remove_flag(s_q_rows[i], LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(s_q_row_text[i], buf);
-        // 选中行高亮（沿用审批页调过的对比度：色条 4→8px + 行底色加亮）
-        lv_obj_set_size(s_q_row_bar[i], sel ? 8 : 4, OV_Q_ROW_H);
-        lv_obj_set_style_bg_color(s_q_row_bar[i], lv_color_hex(UI_ACCENT), 0);
-        lv_obj_set_style_bg_opa(s_q_row_bar[i], sel ? LV_OPA_COVER : LV_OPA_50, 0);
-        lv_obj_set_style_bg_color(s_q_rows[i], lv_color_hex(sel ? UI_ROW_SEL : UI_BG), 0);
-        lv_obj_set_style_text_color(s_q_row_text[i], lv_color_hex(sel ? UI_FG : UI_DIM), 0);
+        // 选中态：色底 + 2px 描边 + 圆点亮起（三重冗余，见 row_set_selected）
+        row_set_selected(s_q_rows[i], s_q_row_dot[i], s_q_row_text[i], sel, UI_ACCENT);
     }
     s_q_row_cache_valid = true;
     // 不加动画：滚动动画会让整个列表逐帧重绘（卡顿放大器）；行数在可视区内时
@@ -1119,12 +1185,9 @@ static void refresh_approval_options(void)
     for (int i = 0; i < APPR_OPTIONS; i++) {
         const bool sel = (i == s_appr_selected);
         if (s_appr_sel_cached >= 0 && sel == (i == s_appr_sel_cached)) continue;
-        // 选中的色条明显加宽 —— 小屏上"选的是哪一个"必须一眼可见
-        lv_obj_set_size(s_appr_opt_bar[i], sel ? 8 : 4, OV_APPR_OPT_H);
-        lv_obj_set_style_bg_color(s_appr_opt_bar[i], lv_color_hex(s_options[i].color), 0);
-        lv_obj_set_style_bg_opa(s_appr_opt_bar[i], sel ? LV_OPA_COVER : LV_OPA_50, 0);
-        lv_obj_set_style_bg_color(s_appr_option[i], lv_color_hex(sel ? UI_ROW_SEL : UI_BG), 0);
-        lv_obj_set_style_text_color(s_appr_opt_text[i], lv_color_hex(sel ? UI_FG : UI_DIM), 0);
+        // 选中态三重冗余；圆点与描边用该选项自己的语义色（允许绿 / 拒绝红）
+        row_set_selected(s_appr_option[i], s_appr_opt_dot[i], s_appr_opt_text[i], sel,
+                         s_options[i].color);
     }
     s_appr_sel_cached = s_appr_selected;
 
@@ -1224,13 +1287,7 @@ static void refresh_settings_rows(void)
         if (s_set_text[i]) lv_label_set_text(s_set_text[i], buf);
 
         const bool sel = (i == s_set_cursor);
-        if (s_set_bar[i]) {
-            lv_obj_set_style_bg_color(s_set_bar[i], lv_color_hex(sel ? UI_ACCENT : UI_LINE), 0);
-            lv_obj_set_style_bg_opa(s_set_bar[i], sel ? LV_OPA_COVER : LV_OPA_50, 0);
-        }
-        if (s_set_rows[i]) {
-            lv_obj_set_style_bg_color(s_set_rows[i], lv_color_hex(sel ? UI_ROW_SEL : UI_BG), 0);
-        }
+        row_set_selected(s_set_rows[i], s_set_dot[i], s_set_text[i], sel, UI_ACCENT);
     }
 
     // 配对行（最后一行，不是档位项）。两行文本：
@@ -1251,15 +1308,7 @@ static void refresh_settings_rows(void)
         lv_label_set_text(s_set_pair_text, buf);
     }
     const bool pair_sel = (s_set_cursor == AP_SETTINGS_ITEM_COUNT);
-    if (s_set_pair_bar) {
-        lv_obj_set_style_bg_color(s_set_pair_bar,
-                                  lv_color_hex(pair_sel ? UI_ACCENT : UI_LINE), 0);
-        lv_obj_set_style_bg_opa(s_set_pair_bar, pair_sel ? LV_OPA_COVER : LV_OPA_50, 0);
-    }
-    if (s_set_pair_row) {
-        lv_obj_set_style_bg_color(s_set_pair_row,
-                                  lv_color_hex(pair_sel ? UI_ROW_SEL : UI_BG), 0);
-    }
+    row_set_selected(s_set_pair_row, s_set_pair_dot, s_set_pair_text, pair_sel, UI_ACCENT);
 }
 
 /** 把配对码页刷到最新（进页或收到新码时调用）。 */
@@ -1437,7 +1486,7 @@ bool app_screens_handle_key(int btn, int event)
         // ★ 必须同时把状态收回空闲。否则主页会停在「等待授权请求」，
         //   而审批页已经关掉 —— 用户看到一句做不到的指引，且无从恢复。
         //   （审批最终由主机侧的 30 秒超时按"拒绝"上报，这里只是让显示立刻回到一致状态。）
-        app_ui_set_task_state(AP_TASK_STATE_IDLE, NULL);
+        app_ui_set_task_state(AP_TASK_STATE_IDLE, NULL, -1);
         ESP_LOGI(TAG, "用户长按返回，放弃审批");
         return true;
     }

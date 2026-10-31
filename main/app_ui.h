@@ -89,11 +89,24 @@ void app_ui_on_link_state(ap_link_state_t state);
  *
  * @param state 四态之一（空闲/运行中/待审批/已完成）
  * @param title 可选的短标题（显示在状态下方），传 NULL 或空串则显示状态说明
+ * @param elapsed_ms 该轮忙碌已运行的毫秒数（主机播种）；**传 -1 表示未知**，
+ *                   此时设备不显示计时 —— 宁可不显示，也不给一个假的精确值
  */
-void app_ui_set_task_state(ap_task_state_t state, const char *title);
+void app_ui_set_task_state(ap_task_state_t state, const char *title, long elapsed_ms);
 
 /** 立刻按当前设置应用屏幕亮度（设置页改档位时用，不用等下次亮屏）。 */
 void app_ui_apply_brightness(void);
+
+/**
+ * 下发主机墙钟（设备没有 RTC，只能由主机告知）。
+ *
+ * 收到后设备记锚点、用单调时钟本地走秒，每分钟重算一次显示，格式 `HH:MM`。
+ * 未收到之前状态条显示 `--:--`。
+ *
+ * @param epoch_sec     UTC 秒（不是毫秒：`long` 在 C3 上只有 32 位，毫秒会溢出）
+ * @param tz_offset_min 本地时区偏移，分钟，东正西负（北京 = +480）
+ */
+void app_ui_set_host_clock(long epoch_sec, int tz_offset_min);
 
 // 录音状态变化（由 app_voice.c 调用）：结束录音时应用录音期间被缓存的状态。
 void app_ui_set_recording(bool recording);

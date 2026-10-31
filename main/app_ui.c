@@ -41,6 +41,7 @@
 //  **绝不跨任务直接操作 LVGL 对象**（LVGL 非线程安全）。
 #include "app_ui.h"
 
+#include "app_clock_logic.h"
 #include "app_proto.h"
 #include "app_conn_logic.h"
 #include "app_link.h"
@@ -85,13 +86,46 @@ static volatile int s_pending_battery = BATT_UNKNOWN;
 static volatile bool s_batt_dirty = false;
 static lv_obj_t *s_app_name;
 
-// 状态主体（占据屏幕绝大部分）
-static lv_obj_t *s_state_block;   // 大色块
+// 状态卡（v2.0：圆角卡片 + 徽章药丸，取代旧版"整块铺状态色"）
+static lv_obj_t *s_state_block;   // 卡片本体（底色固定 UI_CARD）
+static lv_obj_t *s_state_chip;    // 徽章药丸容器
+static lv_obj_t *s_state_chip_dot; // 徽章里的圆点
+static lv_obj_t *s_state_chip_text; // 徽章文字
 static lv_obj_t *s_state_text;    // 状态大字
 static lv_obj_t *s_state_hint;    // 一行补充说明（任务标题 / 提示）
 
+// ── 运行计时（仅「运行中」显示）──
+//
+// ★ 设备端只负责**走秒**，不负责判断时长：锚点与基准都来自主机的 elapsedMs。
+//   用单调时钟（esp_timer）而不是墙钟：设备没有 RTC，墙钟不可信。
+//   每次刷新都用「基准 + 经过时间」重算，而不是 +1 累加 —— 掉帧、熄屏、
+//   渲染卡顿都不会让计时漂移。
+static lv_obj_t *s_timer_text;
+static long s_run_base_ms = 0;     // 主机给的已运行毫秒（种子）
+static uint32_t s_run_anchor_ms = 0; // 收到种子时的本地单调时钟
+static bool s_run_known = false;   // false = 主机未给种子，不显示
+static int32_t s_run_last_sec = -1; // 上次渲染的秒数，避免每帧重设文本
+
 static lv_obj_t *s_footer_l1;     // 底栏提示：第一行
 static lv_obj_t *s_footer_l2;     // 底栏提示：第二行
+static lv_obj_t *s_footer_sep;    // 底栏两行之间的 26×1 发丝线
+
+// ── 状态条第 4 项：当前时间（主机播种）──
+//
+// 设备没有 RTC，也不该有：墙钟是主机随 task.state 下发的「UTC 秒 + 时区偏移」，
+// 设备收到后记锚点、再用单调时钟本地走秒，每分钟重算一次。
+// 这与运行计时是同一套模型（种子 + 单调时钟），区别只是粒度到分钟、且**始终显示**：
+// 空闲时用户更需要知道"现在几点"。
+static lv_obj_t *s_clock_text;
+static int32_t s_clock_seed_sec = 0;      // 主机给的 UTC 秒
+static int16_t s_clock_tz_min = 0;        // 东正西负（北京 = +480）
+static uint32_t s_clock_anchor_ms = 0;    // 收到种子时的本地单调时钟
+static bool s_clock_known = false;        // false = 还没收到种子，显示 "--:--"
+static int32_t s_clock_last_key = -1;     // 上次渲染的 时*60+分，避免每帧重设
+// 跨任务投递（app 任务写，ui_tick 读）
+static volatile long s_pending_clock_sec = -1;
+static volatile long s_pending_clock_tz = 0;
+static volatile bool s_clock_dirty = false;
 
 static lv_obj_t *s_toast;         // 短暂通知
 static lv_obj_t *s_toast_text;
@@ -125,6 +159,8 @@ static uint32_t s_waiting_since_ms = 0;
 static volatile bool s_state_dirty = true;
 static volatile ap_task_state_t s_pending_state = AP_TASK_STATE_IDLE;
 static char s_pending_title[64];
+// 运行计时的种子（-1 = 主机未给，设备不显示计时）
+static volatile long s_pending_elapsed_ms = -1;
 static volatile bool s_link_dirty = true;
 static volatile ap_link_state_t s_pending_link = AP_LINK_OFF;
 // 上一次消费到的链路状态：用于判断"是否从已连接掉到断开"（掉线就回主页）。
@@ -132,6 +168,7 @@ static ap_link_state_t s_last_link = AP_LINK_OFF;
 // 录音期间被缓存的状态变化（见 app_ui_set_task_state / app_ui_set_recording）。
 static ap_task_state_t s_deferred_state = AP_TASK_STATE_IDLE;
 static char s_deferred_title[64];
+static long s_deferred_elapsed_ms = -1;
 static volatile bool s_deferred_state_pending = false;
 
 static volatile bool s_toast_dirty = false;
@@ -152,6 +189,24 @@ static volatile bool s_pending_toast_sticky = false;
  * 「待审批」与「已完成」用最醒目的两种色（琥珀 / 绿），因为它们是需要
  * 用户注意的状态；「运行中」用青色（说明在动，但不用管）；「空闲」用灰。
  */
+/**
+ * 任务状态 → 徽章底色（预混实色：12% 语义色 over UI_CARD）。
+ *
+ * ★ 单独一个函数而不是在 refresh_state 里写第二份 switch：
+ *   徽章底色与文字色必须**成对**变化。手写两处 switch 迟早出现
+ *   "蓝底配琥珀字"这种错配，而它在小屏上不像 bug、像"设计如此"。
+ */
+static uint32_t state_chip_bg(ap_task_state_t st)
+{
+    switch (st) {
+    case AP_TASK_STATE_RUNNING: return UI_INFO_BG;
+    case AP_TASK_STATE_WAITING_APPROVAL: return UI_WARN_BG;
+    case AP_TASK_STATE_COMPLETED: return UI_ACC_BG;
+    case AP_TASK_STATE_IDLE:
+    default: return UI_DIM_BG;
+    }
+}
+
 static void state_style(ap_task_state_t st, const char **text, const char **hint, uint32_t *color)
 {
     switch (st) {
@@ -229,6 +284,121 @@ static void screen_wake(void)
 
 // ── 刷新 ──────────────────────────────────────────────────────────────────
 
+/**
+ * 格式化已运行时长。
+ *
+ * < 1 小时：MM:SS；≥ 1 小时：H:MM:SS（右侧对齐，变宽时向左生长，不挤压状态大字）。
+ *
+ * ★ 严格按设计稿的格式输出，**不加任何前缀符号**（早期版本在起点不可靠时
+ *   会印一个 `~`，按设计稿要求已去掉）。因此本函数的输出可以直接当"精确值"读，
+ *   精度问题只在主机侧处理：主机给不出可信基准时就不下发 elapsedMs（设备不显示计时），
+ *   而不是下发一个含糊的数再让设备打补丁。
+ */
+static void format_elapsed(uint32_t total_s, char *out, size_t out_size)
+{
+    const uint32_t h = total_s / 3600u;
+    const uint32_t m = (total_s % 3600u) / 60u;
+    const uint32_t s = total_s % 60u;
+    if (h > 0) {
+        snprintf(out, out_size, "%u:%02u:%02u", (unsigned)h, (unsigned)m, (unsigned)s);
+    } else {
+        snprintf(out, out_size, "%02u:%02u", (unsigned)m, (unsigned)s);
+    }
+}
+
+/**
+ * 刷新计时标签。
+ *
+ * force=false 时只在**秒数变化**时才 set_text：ui_tick 是 20ms 一次，
+ * 每帧重设标签会白白产生重绘。
+ */
+static void refresh_timer(bool force)
+{
+    if (!s_timer_text) return;
+
+    // 非「运行中」一律清空 —— 空闲/待审批/已完成都不该留一个还在走的数字。
+    //
+    // ★ 这里**每次都读一遍标签实际内容**，而不是靠 `s_run_last_sec == -1`
+    //   当"已清空"的标记：标记和标签是两处状态，任何一处漏更新就会在空闲
+    //   界面上留一个过期数字（用户明确要求"空闲时不用显示时间"）。
+    //   多读一次 `lv_label_get_text` 的代价远小于一个会撒谎的界面。
+    if (s_state != AP_TASK_STATE_RUNNING || !s_run_known) {
+        s_run_last_sec = -1;
+        if (lv_label_get_text(s_timer_text)[0] != '\0') {
+            lv_label_set_text(s_timer_text, "");
+        }
+        return;
+    }
+
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    const uint32_t elapsed_s = (uint32_t)((s_run_base_ms + (long)(uint32_t)(now - s_run_anchor_ms)) / 1000);
+    if (!force && (int32_t)elapsed_s == s_run_last_sec) return;
+    s_run_last_sec = (int32_t)elapsed_s;
+
+    // ★ 字号**不再随运行时长变化**。
+    //   旧逻辑是超过 1 小时改用 8px 点阵：那时用的是 16px 点阵（等宽，
+    //   每字符 16px），跨小时串 "10:23:45" 要 128px，左端会伸进徽章药丸。
+    //   换成 16px 思源黑体后同一个串只有 61.5px（数字 8.81 / 冒号 4.31），
+    //   右侧 192px 的可用宽度里绰绰有余 —— 于是"跨小时字变小"这个
+    //   纯观感副作用消失，整块卡片里也只有一种字号了。
+    //   （判据改了字体就必须重算，别再凭"字数 × 字号"心算，见 app_ui_theme.h。）
+    char buf[16];
+    format_elapsed(elapsed_s, buf, sizeof(buf));
+    lv_label_set_text(s_timer_text, buf);
+}
+
+/**
+ * 刷新状态条上的当前时间。
+ *
+ * 每分钟才真正重设一次文本（force=true 时立即重设）。
+ * ★ 与运行计时相反，这个标签**在空闲时照常显示** —— 用户要的就是"现在几点"，
+ *   而不是"任务跑了多久"。两者互不干扰：计时只在 RUNNING 出现，时间常驻。
+ */
+static void refresh_clock(bool force)
+{
+    if (!s_clock_text || !s_clock_known) return;
+
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    const int32_t epoch_sec = s_clock_seed_sec + (int32_t)((now - s_clock_anchor_ms) / 1000u);
+    int hh = 0, mm = 0;
+    ap_clock_hhmm(epoch_sec, s_clock_tz_min, &hh, &mm);
+
+    const int32_t key = hh * 60 + mm;
+    if (!force && key == s_clock_last_key) return;
+    s_clock_last_key = key;
+
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%02d:%02d", hh, mm);
+    lv_label_set_text(s_clock_text, buf);
+}
+
+// ── 底栏卡：单行 / 双行两种排版 ───────────────────────────────────────────
+//
+// ★ 单行时**必须隐藏发丝线**：一条 26px 的线悬在唯一一行字下面，
+//   看起来像"下面还有内容被截掉了"。行位置也要整体居中，
+//   否则底部会空出一大块（旧的静默 bug：只隐藏第二行、不重新居中）。
+static void footer_set_single(const char *line1, uint32_t color)
+{
+    if (!s_footer_l1) return;
+    lv_label_set_text(s_footer_l1, line1);
+    lv_obj_set_style_text_color(s_footer_l1, lv_color_hex(color), 0);
+    lv_obj_set_pos(s_footer_l1, 0, UI_CENTER_Y(UI_FOOTER_H, UI_LINE_H_CJK16));
+    lv_label_set_text(s_footer_l2, "");
+    if (s_footer_sep) lv_obj_add_flag(s_footer_sep, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void footer_set_two(const char *line1, const char *line2, uint32_t color)
+{
+    if (!s_footer_l1) return;
+    lv_label_set_text(s_footer_l1, line1);
+    lv_obj_set_style_text_color(s_footer_l1, lv_color_hex(color), 0);
+    lv_obj_set_pos(s_footer_l1, 0, UI_FOOTER_LINE1_Y);
+    lv_label_set_text(s_footer_l2, line2);
+    lv_obj_set_style_text_color(s_footer_l2, lv_color_hex(color), 0);
+    lv_obj_set_pos(s_footer_l2, 0, UI_FOOTER_LINE2_Y);
+    if (s_footer_sep) lv_obj_remove_flag(s_footer_sep, LV_OBJ_FLAG_HIDDEN);
+}
+
 static void refresh_state(void)
 {
     if (!s_scr) return;
@@ -238,14 +408,20 @@ static void refresh_state(void)
     uint32_t color = UI_DIM;
     state_style(s_state, &text, &hint, &color);
 
+    // 大字 + 徽章：文字色与徽章底色成对取自同一状态（见 state_chip_bg）
     lv_label_set_text(s_state_text, text);
     lv_obj_set_style_text_color(s_state_text, lv_color_hex(color), 0);
-    // 大色块作为背景强调：小屏上色块的辨识度远高于文字颜色
-    lv_obj_set_style_bg_color(s_state_block, lv_color_hex(color), 0);
+    lv_label_set_text(s_state_chip_text, text);
+    lv_obj_set_style_text_color(s_state_chip_text, lv_color_hex(color), 0);
+    lv_obj_set_style_bg_color(s_state_chip, lv_color_hex(state_chip_bg(s_state)), 0);
+    lv_obj_set_style_bg_color(s_state_chip_dot, lv_color_hex(color), 0);
+    // ★ 卡片底色**不随状态变**：颜色只出现在徽章与大字上。
+    //   旧版把 182px 高的整块铺 20% 状态色，待审批时半屏发黄、字压在上面难读；
+    //   新版把颜色面积收小，反而更容易一眼分辨。
 
     // 补充行：优先显示主机下发的任务标题，没有就显示状态说明
     lv_label_set_text(s_state_hint, s_state_title[0] ? s_state_title : hint);
-    lv_obj_set_style_text_color(s_state_hint, lv_color_hex(UI_DIM), 0);
+    lv_obj_set_style_text_color(s_state_hint, lv_color_hex(UI_SUB), 0);
 
     // ── 底栏提示 ──────────────────────────────────────────────────────────
     //
@@ -257,24 +433,20 @@ static void refresh_state(void)
     //
     //   因此按"此刻真正可用的操作"来写：
     //     · 审批挂起但审批页尚未出现 → 明确说"等待授权请求"，让用户知道该等
-    //     · 其余情况 → 两行独立展示（24px 行框 + 4px 行间隙），不折行不挤压
+    //     · 其余情况 → 两行 + 中间发丝线（行框 20 + 缝 8 + 线 1 + 缝 8 + 行框 20）
     switch (s_state) {
     case AP_TASK_STATE_WAITING_APPROVAL:
         // 审批页会由主机请求自动弹出；在它出现之前主页没有可执行动作。
-        lv_label_set_text(s_footer_l1, "等待授权请求");
-        lv_obj_set_style_text_color(s_footer_l1, lv_color_hex(UI_WARN), 0);
-        lv_obj_set_pos(s_footer_l1, 0, UI_CENTER_Y(UI_FOOTER_H, UI_LINE_H_CJK));
-        lv_label_set_text(s_footer_l2, "");
+        footer_set_single("等待授权请求", UI_WARN);
         break;
     default:
-        // 底栏两行都用 16px 中文：一行能放约 13 个字，才装得下三条手势提示
-        lv_label_set_text(s_footer_l1, "长按上键设置 下键看余额");
-        lv_obj_set_style_text_color(s_footer_l1, lv_color_hex(UI_DIM), 0);
-        lv_obj_set_pos(s_footer_l1, 0, UI_FOOTER_LINE1_Y);
-        lv_label_set_text(s_footer_l2, "按住确定说话");
-        lv_obj_set_style_text_color(s_footer_l2, lv_color_hex(UI_DIM), 0);
+        // 底栏用 16px 中文（行高 20）：一行约 13 个字，才装得下三条手势提示
+        footer_set_two("长按上键设置 下键看余额", "按住确定说话", UI_SUB);
         break;
     }
+
+    // 计时标签跟着状态走：进入运行中立刻显示（不等下一次 tick），离开就清空。
+    refresh_timer(true);
 }
 
 static void refresh_signal_bars(void);
@@ -295,10 +467,7 @@ static void refresh_link(void)
         // 底栏也只写做得到的事。
         lv_label_set_text(s_state_hint, "蓝牙未连接");
         lv_obj_set_style_text_color(s_state_hint, lv_color_hex(UI_ERR), 0);
-        lv_label_set_text(s_footer_l1, "等待蓝牙连接");
-        lv_obj_set_style_text_color(s_footer_l1, lv_color_hex(UI_WARN), 0);
-        lv_obj_set_pos(s_footer_l1, 0, UI_CENTER_Y(UI_FOOTER_H, UI_LINE_H_CJK));
-        lv_label_set_text(s_footer_l2, "");
+        footer_set_single("等待蓝牙连接", UI_WARN);
     }
 }
 
@@ -427,6 +596,22 @@ static void ui_tick(lv_timer_t *timer)
         }
     }
 
+    // 运行计时：内部只在秒数变化时才重设文本，20ms 调一次也不会产生多余重绘。
+    refresh_timer(false);
+
+    // 主机时间种子：到了就重新锚定并立刻重画一次。
+    if (s_clock_dirty) {
+        s_clock_dirty = false;
+        s_clock_seed_sec = (int32_t)s_pending_clock_sec;
+        s_clock_tz_min = (int16_t)s_pending_clock_tz;
+        s_clock_anchor_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        s_clock_known = true;
+        if (s_clock_text) lv_obj_set_style_text_color(s_clock_text, lv_color_hex(UI_SUB), 0);
+        refresh_clock(true);
+    } else {
+        refresh_clock(false);
+    }
+
     if (s_batt_dirty) {
         s_batt_dirty = false;
         refresh_battery();
@@ -460,6 +645,19 @@ static void ui_tick(lv_timer_t *timer)
         const ap_task_state_t prev = s_state;
         s_state = s_pending_state;
         snprintf(s_state_title, sizeof(s_state_title), "%s", s_pending_title);
+        // ── 计时种子 ──
+        // 只在「运行中」播种；主机没给（-1）就不显示计时（宁可不显示，也不猜）。
+        // 每次收到新种子都重新锚定：重连、多会话基准前移、插件重启都走这条路径。
+        if (s_state == AP_TASK_STATE_RUNNING && s_pending_elapsed_ms >= 0) {
+            s_run_known = true;
+            s_run_base_ms = s_pending_elapsed_ms;
+            s_run_anchor_ms = (uint32_t)(esp_timer_get_time() / 1000);
+            s_run_last_sec = -1;   // 强制下一帧渲染
+        } else if (s_state != AP_TASK_STATE_RUNNING) {
+            // 离开运行中就丢掉锚点：已完成/待审批不应带着一个还在走的数字。
+            s_run_known = false;
+            s_run_last_sec = -1;
+        }
         // 记录进入「待审批」的时刻，用于下面的兜底超时
         if (s_state == AP_TASK_STATE_WAITING_APPROVAL && prev != AP_TASK_STATE_WAITING_APPROVAL) {
             s_waiting_since_ms = (uint32_t)(esp_timer_get_time() / 1000);
@@ -502,7 +700,7 @@ static void ui_tick(lv_timer_t *timer)
         if ((uint32_t)(now - s_waiting_since_ms) >= APPROVAL_WAIT_TIMEOUT_MS) {
             ESP_LOGW(TAG, "等待授权请求超时，回落到空闲（避免卡在无效提示上）");
             s_waiting_since_ms = 0;
-            app_ui_set_task_state(AP_TASK_STATE_IDLE, NULL);
+            app_ui_set_task_state(AP_TASK_STATE_IDLE, NULL, -1);
         }
     }
     // 审批页一旦打开，清掉等待计时
@@ -524,108 +722,148 @@ static void ui_tick(lv_timer_t *timer)
 
 static void build_statusbar(void)
 {
-    lv_obj_t *bar = lv_obj_create(s_scr);
-    ui_theme_rect(bar, UI_PANEL);
-    lv_obj_set_pos(bar, PX(0), PY(UI_STATUSBAR_Y));
-    lv_obj_set_size(bar, UI_W, UI_STATUSBAR_H);
+    // v2.0：状态条不再有底色和分隔线。它直接坐在页面底上，
+    // 靠"下面 8px 缝 + 一张卡片"表达层级 —— 硬边时代那层背景 + 1px 线，
+    // 换成圆角卡片之后反而成了第二套边界，整屏看着脏。
+    //
+    // 子对象挂在 s_scr 上，坐标即安全区坐标（PX/PY 负责加 INSET 偏移）。
+    const int bar_bottom = UI_STATUSBAR_Y + UI_STATUSBAR_H;   // = 22
 
-    // 细边框底线，清晰区分状态条与主体
-    lv_obj_t *rule = lv_obj_create(s_scr);
-    ui_theme_rect(rule, UI_LINE);
-    lv_obj_set_pos(rule, PX(0), PY(UI_STATUSBAR_H));
-    lv_obj_set_size(rule, UI_W, 1);
-
-    // 链路信号格：4 格递增方块（放最左，视线起点）。连接状态由格数与颜色表达，
-    // 未连接时全部熄灭并在主界面提示"蓝牙未连接"（见 refresh_link）。
-    const int bar_x0 = UI_PAD;
-    const int bar_y_base = UI_CENTER_Y(UI_STATUSBAR_H, 10) + 10;
+    // 链路信号格：4 格递增方块（宽 3 / 间距 2 / 底边对齐 / 圆端）。
+    // 圆角在 3px 宽的方块上不能用 UI_R_* 档：半径大于半宽会被 LVGL 收成胶囊，
+    // 这里要的正是"胶囊短棒"，所以固定写 2。
     for (int i = 0; i < LINK_BARS; i++) {
-        lv_obj_t *bar_i = lv_obj_create(bar);
+        const int h = 4 + i * 3;
+        lv_obj_t *bar_i = lv_obj_create(s_scr);
         ui_theme_rect(bar_i, UI_LINE);
-        lv_obj_set_pos(bar_i, bar_x0 + i * 5, bar_y_base - (4 + i * 3));
-        lv_obj_set_size(bar_i, 3, 4 + i * 3);
+        lv_obj_set_style_radius(bar_i, 2, 0);
+        lv_obj_set_size(bar_i, 3, h);
+        lv_obj_set_pos(bar_i, PX(i * 5), PY(bar_bottom - h));
         s_link_bars[i] = bar_i;
     }
 
-    // 应用名使用 UI_FONT_CJK，24px 行框在 28px 高的状态条中垂直居中（y=2）
-    s_app_name = ui_theme_text(bar, "AI 通行证", UI_FONT_CJK, UI_FG);
-    lv_obj_set_pos(s_app_name, UI_PAD + 24, UI_CENTER_Y(UI_STATUSBAR_H, UI_LINE_H_CJK));
+    // 应用名：16px 中文（行高 20），在 22px 状态条里居中（y=1）。
+    // ★ 不能用 20px 中文（行高 24 > 22）——会被裁掉一截，中文裁切就是方块。
+    // ★ 与右侧的时间/电量**同一款字体**（UI_FONT_CJK16），否则字号一样但
+    //   一款点阵一款比例，看上去仍是"没对齐"（见 app_ui_theme.h 状态条一节）。
+    s_app_name = ui_theme_text(s_scr, "AI 通行证", UI_FONT_CJK16, UI_SUB);
+    lv_obj_set_pos(s_app_name, PX(UI_APPNAME_X), PY(UI_CENTER_Y(UI_STATUSBAR_H, UI_LINE_H_CJK16)));
 
-    // ── 电量（右上角，图标 + 百分比）──
-    // 图标 = 外壳 + 正极小凸起 + 内部电量条；百分比文字右对齐排在图标左侧。
-    const int batt_y = UI_CENTER_Y(UI_STATUSBAR_H, 10);
-    const int shell_x = UI_W - UI_PAD - 22;
+    // ── 电量（右上角：百分比 + 图标）──
+    // ★ 顺序是"百分比在图标左侧"，与设计稿相反。原因：图标右侧还有 2px 正极凸起，
+    //   把百分比放它右边至少需要 32px（"100%"），220 宽的安全区里会溢出到圆角外。
+    //   小屏上字号不能缩，只能换顺序。
+    const int batt_y = UI_CENTER_Y(UI_STATUSBAR_H, 10);   // = 6
+    const int shell_x = UI_W - 22;                        // 20 外壳 + 2 凸起，贴右缘
 
-    s_batt_shell = lv_obj_create(bar);
+    s_batt_shell = lv_obj_create(s_scr);
     ui_theme_rect(s_batt_shell, UI_LINE);
-    lv_obj_set_pos(s_batt_shell, shell_x, batt_y);
+    lv_obj_set_style_radius(s_batt_shell, 3, 0);
+    lv_obj_set_pos(s_batt_shell, PX(shell_x), PY(batt_y));
     lv_obj_set_size(s_batt_shell, 20, 10);
 
-    s_batt_tip = lv_obj_create(bar);
+    s_batt_tip = lv_obj_create(s_scr);
     ui_theme_rect(s_batt_tip, UI_LINE);
-    lv_obj_set_pos(s_batt_tip, shell_x + 20, batt_y + 3);
+    lv_obj_set_style_radius(s_batt_tip, 1, 0);
+    lv_obj_set_pos(s_batt_tip, PX(shell_x + 20), PY(batt_y + 3));
     lv_obj_set_size(s_batt_tip, 2, 4);
 
-    s_batt_fill = lv_obj_create(bar);
+    s_batt_fill = lv_obj_create(s_scr);
     ui_theme_rect(s_batt_fill, UI_DIM);
-    lv_obj_set_pos(s_batt_fill, shell_x + 2, batt_y + 2);
+    lv_obj_set_style_radius(s_batt_fill, 2, 0);
+    lv_obj_set_pos(s_batt_fill, PX(shell_x + 2), PY(batt_y + 2));
     lv_obj_set_size(s_batt_fill, 0, 6);
 
-    s_batt_text = ui_theme_text(bar, "", UI_FONT_CJK, UI_DIM);
-    lv_obj_set_pos(s_batt_text, shell_x - 4 - 52, UI_CENTER_Y(UI_STATUSBAR_H, UI_LINE_H_CJK));
-    lv_obj_set_width(s_batt_text, 52);
+    // 百分比：16px 思源（"100%" 实宽 41.1）。宽度按 "100%" 留足，
+    // 否则满电时最后那个 % 会被裁掉。
+    // ★ 用 UI_FONT_CJK16 而不是 8px 点阵：状态条四个元素要同一款字体同一字号，
+    //   点阵在 16px 下是等宽（每字符 16px），"100%" 要 64px，根本放不下；
+    //   思源是比例字体，只要 41.1px（见 app_ui_theme.h 状态条一节的踩坑记录）。
+    s_batt_text = ui_theme_text(s_scr, "--", UI_FONT_CJK16, UI_DIM);
+    lv_obj_set_pos(s_batt_text, PX(UI_BATT_X), PY(UI_CENTER_Y(UI_STATUSBAR_H, UI_LINE_H_CJK16)));
+    lv_obj_set_width(s_batt_text, UI_BATT_W);
     lv_obj_set_style_text_align(s_batt_text, LV_TEXT_ALIGN_RIGHT, 0);
+
+    // ── 当前时间（电量左边，与电量同款 16px）──
+    // 未收到主机种子时显示 "--:--"：与电量的 "--" 是同一种"我还不知道"的表达；
+    // 右对齐且框宽固定，所以知道时间后只是左边缘生长，不会牵动别的元素重排。
+    s_clock_text = ui_theme_text(s_scr, "--:--", UI_FONT_CJK16, UI_SUB);
+    lv_obj_set_pos(s_clock_text, PX(UI_CLOCK_X), PY(UI_CENTER_Y(UI_STATUSBAR_H, UI_LINE_H_CJK16)));
+    lv_obj_set_width(s_clock_text, UI_CLOCK_W);
+    lv_obj_set_style_text_align(s_clock_text, LV_TEXT_ALIGN_RIGHT, 0);
 }
 
-static void build_body(void)
+static void build_state_card(void)
 {
-    // 状态色块：铺满状态条与底栏之间的整个区域，让状态占据视觉主体
+    // 状态卡：R16 + 1px 淡描边，底色固定 UI_CARD（**不随状态变**，见 refresh_state）
     s_state_block = lv_obj_create(s_scr);
-    ui_theme_rect(s_state_block, UI_DIM);
-    lv_obj_set_pos(s_state_block, PX(0), PY(UI_BODY_Y));
-    lv_obj_set_size(s_state_block, UI_W, UI_BODY_H);
-    lv_obj_set_style_bg_opa(s_state_block, LV_OPA_20, 0);
+    ui_theme_card(s_state_block, UI_CARD, UI_STROKE, UI_R_LG);
+    lv_obj_set_pos(s_state_block, PX(0), PY(UI_STATE_CARD_Y));
+    lv_obj_set_size(s_state_block, UI_W, UI_STATE_CARD_H);
 
-    // 状态大字：居中放在色块偏上位置
+    // 徽章药丸：宽度随文字自适应（LV_SIZE_CONTENT + 横向 flex），
+    // "空闲"两字与"待审批"三字各自贴边，不会出现一块固定宽度的空胶囊。
+    s_state_chip = lv_obj_create(s_state_block);
+    ui_theme_pill(s_state_chip, UI_DIM_BG);
+    lv_obj_set_size(s_state_chip, LV_SIZE_CONTENT, UI_STATE_CHIP_H);
+    lv_obj_set_pos(s_state_chip, UI_CARD_PAD_X, UI_STATE_CHIP_Y);
+    lv_obj_set_style_pad_hor(s_state_chip, UI_STATE_CHIP_PAD_X, 0);
+    lv_obj_set_style_pad_column(s_state_chip, UI_STATE_CHIP_GAP, 0);
+    lv_obj_set_flex_flow(s_state_chip, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_state_chip, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+
+    s_state_chip_dot = lv_obj_create(s_state_chip);
+    ui_theme_pill(s_state_chip_dot, UI_DIM);
+    lv_obj_set_size(s_state_chip_dot, UI_STATE_CHIP_DOT, UI_STATE_CHIP_DOT);
+
+    s_state_chip_text = ui_theme_text(s_state_chip, "空闲", UI_FONT_CJK16, UI_DIM);
+
+    // XL 大字：**左对齐**（设计稿改版）。居中时"运行中"三个字会被两侧留白
+    // 推得比徽章还轻，视线抓不住；左对齐让徽章、大字、提示落在同一条竖向基线上。
     s_state_text = ui_theme_text(s_state_block, "空闲", UI_FONT_XL, UI_DIM);
-    lv_obj_set_pos(s_state_text, 0, UI_STATE_TEXT_Y);
-    lv_obj_set_width(s_state_text, UI_W);
-    lv_obj_set_style_text_align(s_state_text, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(s_state_text, UI_CARD_PAD_X, UI_STATE_TEXT_Y);
+    lv_obj_set_width(s_state_text, UI_STATE_HINT_W);
+    lv_obj_set_style_text_align(s_state_text, LV_TEXT_ALIGN_LEFT, 0);
 
-    // 补充说明行（任务标题或状态提示），居中放在大字下方，支持换行并有充足行距。
-    // ★ 高度钉死为 UI_STATE_HINT_H（3 行）+ 省略号截断：主机下发的标题长短不定，
-    //   不设上限就会长文一路压到状态主体底部之外，压到分隔线和底栏上。
-    s_state_hint = ui_theme_text(s_state_block, "", UI_FONT_CJK, UI_DIM);
-    lv_obj_set_pos(s_state_hint, UI_PAD, UI_STATE_HINT_Y);
-    lv_obj_set_width(s_state_hint, UI_W - UI_PAD * 2);
+    // 提示行：2 行 + 省略号，左对齐（高度由 UI_STATE_HINT_H 钉死，见主题头说明）
+    s_state_hint = ui_theme_text(s_state_block, "", UI_FONT_CJK, UI_SUB);
+    lv_obj_set_pos(s_state_hint, UI_CARD_PAD_X, UI_STATE_HINT_Y);
+    lv_obj_set_width(s_state_hint, UI_STATE_HINT_W);
     lv_obj_set_height(s_state_hint, UI_STATE_HINT_H);
-    lv_obj_set_style_text_align(s_state_hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_align(s_state_hint, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_style_text_line_space(s_state_hint, UI_TEXT_LINE_SPACE, 0);
     lv_label_set_long_mode(s_state_hint, LV_LABEL_LONG_DOT);
+
+    // 运行计时：贴卡片右上角，与徽章同一行。
+    // ★ 16px 思源（与状态条同一款）：等宽点阵在 16px 下 6 位数字要 96px，
+    //   思源只要 52.9px，且数字是 tabular（每字等宽），秒数跳动时不会左右抽。
+    //   右对齐 = 标签宽度自适应、右边缘钉死在卡片内边距上，数字变长只向左长。
+    s_timer_text = ui_theme_text(s_state_block, "", UI_FONT_CJK16, UI_INFO);
+    lv_obj_align(s_timer_text, LV_ALIGN_TOP_RIGHT, -UI_CARD_PAD_X, UI_STATE_TIMER_Y);
 }
 
 static void build_footer(void)
 {
+    // 底栏卡：R14 + 1px 描边，底色 UI_CARD2（比状态卡暗一档，明确是"附属信息"）
     lv_obj_t *footer = lv_obj_create(s_scr);
-    ui_theme_rect(footer, UI_BG);
+    ui_theme_card(footer, UI_CARD2, UI_STROKE, UI_R_CARD);
     lv_obj_set_pos(footer, PX(0), PY(UI_FOOTER_Y));
     lv_obj_set_size(footer, UI_W, UI_FOOTER_H);
 
-    // 顶部加一条精致的分隔线，将状态主体与底栏自然隔开
-    lv_obj_t *rule = lv_obj_create(s_scr);
-    ui_theme_rect(rule, UI_LINE);
-    lv_obj_set_pos(rule, PX(0), PY(UI_FOOTER_Y - 1));
-    lv_obj_set_size(rule, UI_W, 1);
-
-    // 两行独立标签：每行一个 24px 行框，行框之间留 4px（中文 20px 的实际字形
-    // 之间约有 6px 视觉间隙）。上一版两行行框首尾相接，只留 2px 字缝，用户看到
-    // 的就是"字都挤在一起" —— 行距必须从字体行高推出，不能拍脑袋写 y。
-    s_footer_l1 = ui_theme_text(footer, "", UI_FONT_CJK16, UI_DIM);
+    // 两行 16px 中文（行高 20）+ 中间 26×1 发丝线。位置全部由主题宏算出，
+    // 不写死 y（教训 2：写死 y=19 时中文行高 24 直接压字）。
+    s_footer_l1 = ui_theme_text(footer, "", UI_FONT_CJK16, UI_SUB);
     lv_obj_set_pos(s_footer_l1, 0, UI_FOOTER_LINE1_Y);
     lv_obj_set_width(s_footer_l1, UI_W);
     lv_obj_set_style_text_align(s_footer_l1, LV_TEXT_ALIGN_CENTER, 0);
 
-    s_footer_l2 = ui_theme_text(footer, "", UI_FONT_CJK16, UI_DIM);
+    s_footer_sep = lv_obj_create(footer);
+    ui_theme_rect(s_footer_sep, UI_HAIR);
+    lv_obj_set_size(s_footer_sep, UI_FOOTER_SEP_W, 1);
+    lv_obj_set_pos(s_footer_sep, (UI_W - UI_FOOTER_SEP_W) / 2, UI_FOOTER_SEP_Y);
+
+    s_footer_l2 = ui_theme_text(footer, "", UI_FONT_CJK16, UI_SUB);
     lv_obj_set_pos(s_footer_l2, 0, UI_FOOTER_LINE2_Y);
     lv_obj_set_width(s_footer_l2, UI_W);
     lv_obj_set_style_text_align(s_footer_l2, LV_TEXT_ALIGN_CENTER, 0);
@@ -633,21 +871,23 @@ static void build_footer(void)
 
 static void build_toast(void)
 {
-    // 提示条浮在状态主体之上，用于"已审批""连接已断开"这类短暂通知
+    // 提示条浮在状态卡之上：R16 + 1px 语义色描边（颜色由 toast_show 改）。
+    //
+    // ★ 不做设计稿里的"全屏半透明遮罩"：
+    //   ① 半透明全屏对象在 LVGL 里会触发整屏重绘，这台机器上肉眼可见掉帧；
+    //   ② 更重要的原因是语义 —— Toast 只是"顺带告诉你一句"，
+    //      盖一层遮罩会让人以为需要先处理它。真正需要立刻响应的是「待审批」，
+    //      那个走的是全屏覆盖层，本来就该挡住主页。
     s_toast = lv_obj_create(s_scr);
-    ui_theme_rect(s_toast, UI_PANEL);
-    lv_obj_set_pos(s_toast, PX(UI_PAD), PY(UI_BODY_Y + 16));
-    lv_obj_set_size(s_toast, UI_W - UI_PAD * 2, UI_TOAST_H);
-    // 只留左边框作为强调（比四周描边更轻），颜色表示紧急程度
-    lv_obj_set_style_border_side(s_toast, LV_BORDER_SIDE_LEFT, 0);
-    lv_obj_set_style_border_width(s_toast, 4, 0);
-    lv_obj_set_style_border_color(s_toast, lv_color_hex(UI_ACCENT), 0);
+    ui_theme_card(s_toast, UI_CARD, UI_ACCENT, UI_R_LG);
+    lv_obj_set_pos(s_toast, PX(UI_CARD_PAD_X), PY(UI_STATE_CARD_Y + 20));
+    lv_obj_set_size(s_toast, UI_W - UI_CARD_PAD_X * 2, UI_TOAST_H);
     lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
 
-    // 文本限 2 行、超出省略号：提示文案最长 80 字节，不限行会撑破提示条底边
+    // 文本限 2 行、超出省略号：提示文案最长 512 字节，不限行会撑破提示条底边
     s_toast_text = ui_theme_text(s_toast, "", UI_FONT_CJK, UI_FG);
-    lv_obj_set_pos(s_toast_text, 10, UI_TOAST_TEXT_Y);
-    lv_obj_set_width(s_toast_text, UI_W - UI_PAD * 2 - 20);
+    lv_obj_set_pos(s_toast_text, 12, UI_TOAST_TEXT_Y);
+    lv_obj_set_width(s_toast_text, UI_W - UI_CARD_PAD_X * 2 - 24);
     lv_obj_set_height(s_toast_text, UI_TOAST_TEXT_H);
     lv_obj_set_style_text_line_space(s_toast_text, UI_TEXT_LINE_SPACE, 0);
     lv_label_set_long_mode(s_toast_text, LV_LABEL_LONG_DOT);
@@ -661,7 +901,7 @@ void app_ui_create(void)
     ui_theme_rect(s_scr, UI_BG);
 
     build_statusbar();
-    build_body();
+    build_state_card();
     build_footer();
     build_toast();
 
@@ -693,8 +933,11 @@ void app_ui_destroy(void)
     s_link_bars[0] = NULL; s_link_bars[1] = NULL;
     s_link_bars[2] = NULL; s_link_bars[3] = NULL;
     s_batt_shell = NULL; s_batt_fill = NULL; s_batt_tip = NULL; s_batt_text = NULL;
-    s_app_name = NULL; s_state_block = NULL;
+    s_app_name = NULL;
+    s_state_block = NULL; s_state_chip = NULL; s_state_chip_dot = NULL;
+    s_state_chip_text = NULL;
     s_state_text = NULL; s_state_hint = NULL; s_footer_l1 = NULL; s_footer_l2 = NULL;
+    s_footer_sep = NULL;
     s_toast = NULL; s_toast_text = NULL;
 }
 
@@ -712,20 +955,35 @@ void app_ui_apply_brightness(void)
     bsp_display_backlight(s_screen_on ? (uint8_t)ap_settings_get()->brightness : 0);
 }
 
-void app_ui_set_task_state(ap_task_state_t state, const char *title)
+void app_ui_set_host_clock(long epoch_sec, int tz_offset_min)
+{
+    // 主机时间随 task.state 一起到（见 app.c）。和状态一样走"待处理 + 脏标志"，
+    // 因为这里可能是 BLE 任务在调，而 LVGL 不能跨任务碰。
+    if (epoch_sec <= 0) return;
+    s_pending_clock_tz = tz_offset_min;
+    s_pending_clock_sec = epoch_sec;
+    s_clock_dirty = true;
+}
+
+void app_ui_set_task_state(ap_task_state_t state, const char *title, long elapsed_ms)
 {
     // ★ 录音期间**缓存而不应用**：主机的 task.state 推送可能因为链路重连、
     //   定时器等任何原因在录音中途到达，覆盖"识别中…"的显示 ——
     //   表现为"按住说话到一半界面跳到空闲"（真机返工记录）。
     //   这里把状态暂存起来，等 app_ui_set_recording(false) 时一次性应用。
+    //
+    //   计时种子一并缓存：录音结束后补推的那条会带上最新 elapsedMs，
+    //   如果丢掉它，松手后计时会从旧锚点继续，看起来"少走了一段"。
     if (app_voice_recording()) {
         s_deferred_state = state;
         clean_text(title, s_deferred_title, sizeof(s_deferred_title));
+        s_deferred_elapsed_ms = elapsed_ms;
         s_deferred_state_pending = true;
         return;
     }
     s_pending_state = state;
     clean_text(title, s_pending_title, sizeof(s_pending_title));
+    s_pending_elapsed_ms = elapsed_ms;
     s_state_dirty = true;
 }
 
@@ -741,6 +999,7 @@ void app_ui_set_recording(bool recording)
     s_deferred_state_pending = false;
     s_pending_state = s_deferred_state;
     snprintf(s_pending_title, sizeof(s_pending_title), "%s", s_deferred_title);
+    s_pending_elapsed_ms = s_deferred_elapsed_ms;
     s_state_dirty = true;
 }
 

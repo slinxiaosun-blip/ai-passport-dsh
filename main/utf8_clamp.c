@@ -16,7 +16,11 @@ void utf8_copy_clamped(const char *src, char *dst, size_t dst_size)
     if (dst_size == 0) return;
     if (!src) { dst[0] = '\0'; return; }
 
-    size_t len = strnlen(src, dst_size - 1);
+    // ★ 不用 strnlen：Linux 的 `-std=c11` 下它没有声明（需要 _POSIX_C_SOURCE /
+    //   _GNU_SOURCE），CI 的静态检查因此报 implicit declaration 失败。手写计数
+    //   既满足"最多 dst_size-1 字节"的语义，又不依赖平台特性宏。
+    size_t len = 0;
+    while (len + 1 < dst_size && src[len] != '\0') len++;
     memcpy(dst, src, len);
     dst[len] = '\0';
 

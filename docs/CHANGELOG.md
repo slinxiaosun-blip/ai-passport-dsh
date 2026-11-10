@@ -10,7 +10,34 @@
 > with `CHANGELOG.zh_CN.md`. The entries currently under `Unreleased` are pending
 > review for the next release; they are not a finalized release history.
 
-## Unreleased
+## v1.4.1-dsh-passport - 2026-11-10
+
+- **Behaviour-equivalent patch**: `main/utf8_clamp.c` now uses a bounded loop instead
+  of `strnlen`, fixing the implicit-declaration failure in the Linux `-std=c11` CI
+  static checks. Truncation semantics are unchanged (at most `dst_size-1` bytes) and
+  the device behaves identically.
+
+## v1.4.0-dsh-passport - 2026-11-10
+
+- **Voice interaction rework**: on the "Other" row, a click submits and a long press
+  starts recording. Recognition now opens a dedicated result page (click to fill,
+  long press to submit, UP to re-record, **DOWN to page through**, wrapping to the
+  first page after the last). The voice page only shows recording/recognising status
+  and no longer echoes recognised text. The idle recording page and the question voice
+  page now share one hollow double-ring layout with a card text box.
+- **Status card**: the elapsed timer moved below the task hint, centred; when a task
+  completes the final duration is shown statically in the same place. "Waiting for
+  approval" and "waiting for answer" are no longer displayed as separate states;
+  both render as "Running" (they still drive screen wake, priority, and keep-awake).
+- **Question page**: the title shows "Answer N/M"; a cursor-dependent operation hint
+  sits below the option list; long option labels marquee on the focused row; the
+  footer countdown appears only when an explicit timeout is configured.
+- **Settings**: new "Key sound" toggle; its volume follows the existing alert volume.
+- **Bluetooth**: the hello flag is reset on disconnect, and `hello.ack` now carries
+  firmware and battery, fixing the host panel showing "—" for both after reconnects.
+- BLE protocol v1 is unchanged.
+
+## v1.3.1-dsh-passport - 2026-10-31
 
 - **All four status-bar items now use the same 16px Source Han Sans face.** The app name was
   16px while the clock and battery percentage were 8px bitmap, so a single 22px row mixed two

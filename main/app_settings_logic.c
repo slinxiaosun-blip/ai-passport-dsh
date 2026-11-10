@@ -23,6 +23,12 @@ static const ap_settings_item_def_t ITEMS[AP_SETTINGS_ITEM_COUNT] = {
         .values = { 0, 30, 60, 120 },
         .count = 4,
     },
+    [AP_SETTINGS_KEY_SOUND] = {
+        .name = "按键音",
+        .labels = { "关", "开" },
+        .values = { 0, 1 },
+        .count = 2,
+    },
     [AP_SETTINGS_ALERT_VOLUME] = {
         .name = "提示音量",
         // 用户要求加一档"中高"（85%）：静音 / 低 / 中 / 中高 / 高

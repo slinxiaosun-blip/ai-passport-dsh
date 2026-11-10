@@ -81,6 +81,13 @@ static ap_task_state_t s_task_state = AP_TASK_STATE_IDLE;
 // 最近一次"用户在动"的时刻（按键 / 收到主机消息 / 覆盖页交互）。
 // 自动休眠只看这个时间戳，配合 ap_settings_should_power_off 的纯判定。
 static uint32_t s_last_activity_ms = 0;
+// 主页 PTT 按下时刻：松手时用它区分"误碰短按"（<500ms，主机静默丢弃）与正常录音。
+static uint32_t s_ptt_press_ms = 0;
+// 这次确定键的按下**是否由主页/录音页的 PTT 开始**。
+// ★ 覆盖层里的按键（如结果页长按提交）会在按下之后关掉覆盖页，松手时
+//   screen 已回到 NONE —— 没有这个标记，松手会漏进主页 PTT 分支，
+//   被当成"松手结束录音"，于是刚提交完又弹出空闲录音页并显示"识别中…"。
+static bool s_ptt_active = false;
 
 static uint32_t now_ms(void)
 {
@@ -302,7 +309,7 @@ static void handle_approval_result(const char *json)
     } else if (strcmp(outcome, "rejected") == 0) {
         app_ui_post_toast("电脑端已拒绝", false);
     } else if (strcmp(outcome, "timeout") == 0) {
-        app_ui_post_toast("审批已超时", true);
+        app_ui_post_toast("审批已超时，请在电脑端操作", true);
     }
 }
 
@@ -428,6 +435,7 @@ static void handle_task_state(const char *json)
     ap_task_state_t st = AP_TASK_STATE_IDLE;
     if (strcmp(state, "running") == 0)               st = AP_TASK_STATE_RUNNING;
     else if (strcmp(state, "waiting_approval") == 0) st = AP_TASK_STATE_WAITING_APPROVAL;
+    else if (strcmp(state, "waiting_question") == 0) st = AP_TASK_STATE_WAITING_QUESTION;
     else if (strcmp(state, "completed") == 0)        st = AP_TASK_STATE_COMPLETED;
 
     const bool changed = (st != s_task_state);
@@ -542,6 +550,8 @@ static void process_message(const char *json)
         // ★ 诊断：记录收到的 voice.error 原始内容，定位"闪过识别失败"的来源。
         ESP_LOGW(TAG, "收到 voice.error：%s", json);
         app_ui_post_toast(err[0] ? err : "语音识别失败", true);
+        // 「其他」语音页可能还停在"识别中…"：复原成"按住确定说话"，让用户重录。
+        app_screens_question_voice_failed();
         return;
     }
     if (strcmp(type, AP_MSG_QUESTION_REQ) == 0) {
@@ -549,6 +559,8 @@ static void process_message(const char *json)
         // options 用 '|' 分隔、multiSelect/hasCustom 用 0/1。
         ap_question_msg_t q;
         memset(&q, 0, sizeof(q));
+        // 缺省 = 不预选；memset 的 0 会被当成"预选第 1 项"，旧主机又可能不发该字段。
+        q.recommended_index = -1;
         ap_json_str(json, "callId", q.call_id, sizeof(q.call_id));
         ap_json_str(json, "qid", q.qid, sizeof(q.qid));
         // ★ 只收一行极短摘要：完整题干/计划正文在电脑卡片上（用户决策 2026-10-06）。
@@ -618,6 +630,13 @@ static bool handle_key(const key_msg_t *key)
 {
     s_last_activity_ms = now_ms();   // 任何按键都算"用户在动"
 
+    // 按键提示音：只在按下瞬间响一声（极短轻点）。音量跟随系统设置里的
+    // 「提示音量」（0 = 静音），设置页改档立即生效（app_screens 里 alert_set_volume）。
+    if (key->event == BSP_BTN_PRESS) {
+        // 音量跟随「提示音量」，开关单独有「按键音」设置项（0 = 关）
+        alert_play(ALERT_KEY, alert_get_setting() && ap_settings_get()->key_sound != 0);
+    }
+
     // 覆盖层打开时，长按确定 = 返回上一级（由 app_screens 消费），不录音不断开。
     // ★ 锁超时不静默丢键：重试一次，仍拿不到才放弃并告警 ——
     //   丢键的表现是"按了没反应"，而锁超时恰恰在屏幕忙时最容易发生。
@@ -631,17 +650,37 @@ static bool handle_key(const key_msg_t *key)
     ESP_LOGD(TAG, "按键 btn=%d ev=%d 消费=%d 覆盖层=%d",
              (int)key->btn, (int)key->event, (int)consumed, (int)screen);
 
-    // 主页：PTT 按住确定说话 —— 按下开始录音，松开结束并发送。
+    // 主页/录音页：PTT 按住确定说话 —— 按下开始录音，松开结束并发送。
+    // 录音页（AP_SCREEN_PTT）是纯展示覆盖层，screens 不消费按键，这里也要放行，
+    // 否则松手被当成"覆盖层打开"而漏掉（录音会一直录到 30s 上限）。
     // 断开连接已移除 —— 断开只由插件/控制面板那边控制，设备端不再提供。
-    if (!consumed && screen == AP_SCREEN_NONE && key->btn == BSP_BTN_OK) {
+    if (!consumed && (screen == AP_SCREEN_NONE || screen == AP_SCREEN_PTT) && key->btn == BSP_BTN_OK) {
         if (key->event == BSP_BTN_PRESS) {
             ESP_LOGI(TAG, "按下确定：开始录音");
+            s_ptt_press_ms = now_ms();
+            s_ptt_active = true;
             app_voice_start();
+            // 统一录音界面：主页按住说话也显示与「其他」语音页同款的全屏页。
+            app_screens_post_ptt_voice(true);
         } else if (key->event == BSP_BTN_RELEASE) {
+            // ★ 只有确实由主页 PTT 按下的那一次，松手才走这里。否则（覆盖层提交后
+            //   q_finish 让 screen 变回 NONE）这次 RELEASE 会误触发录音收尾。
+            if (!s_ptt_active) {
+                ESP_LOGD(TAG, "松开确定：无主页 PTT 按下记录，忽略");
+                bsp_lvgl_unlock();
+                return true;
+            }
+            s_ptt_active = false;
             // 不前置判断 recording()：快速点按时任务可能还没醒（state 仍 IDLE），
             // app_voice_stop 内部用 stop_pending 兜住这个窗口。
             ESP_LOGI(TAG, "松开确定");
             app_voice_stop();
+            // 误碰短按（<500ms）主机按"过短"静默丢弃，别让设备停在"识别中…"。
+            if ((uint32_t)(now_ms() - s_ptt_press_ms) < 500u) {
+                app_screens_hide_ptt_voice();
+            } else {
+                app_screens_post_ptt_voice(false);
+            }
         }
     }
 
@@ -757,7 +796,8 @@ static void app_task(void *arg)
         const ap_settings_t *set = ap_settings_get();
         if (set->auto_off_min > 0) {
             const bool task_running = (s_task_state == AP_TASK_STATE_RUNNING ||
-                                       s_task_state == AP_TASK_STATE_WAITING_APPROVAL);
+                                       s_task_state == AP_TASK_STATE_WAITING_APPROVAL ||
+                                       s_task_state == AP_TASK_STATE_WAITING_QUESTION);
             const bool overlay_open = app_screens_current() != AP_SCREEN_NONE;
             if (ap_settings_should_power_off(now_ms() - s_last_activity_ms, set->auto_off_min,
                                              task_running, overlay_open, app_voice_recording())) {

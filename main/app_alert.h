@@ -23,6 +23,7 @@ typedef enum {
     ALERT_APPROVAL,    // 待审批：需要立刻处理 → 急促双响（偏高）
     ALERT_COMPLETED,   // 已完成：知道就好 → 舒缓单响（偏低）
     ALERT_DECIDED,     // 审批/计划已选择：确认类反馈 → 上行双音（与上面两者都不同）
+    ALERT_KEY,         // 按键反馈：极短轻点（音量跟随「提示音量」系统设置）
 } alert_kind_t;
 
 /** 初始化提示音（准备 I2S 输出）。可在任意时刻调用，重复调用安全。 */

@@ -449,7 +449,21 @@ static void handle_control_message(const char *json)
             }
             ESP_LOGI(TAG, "收到主机 hello（token 校验通过），回 hello.ack");
             s_host_token_ok = true;
-            send_control_short(AP_MSG_HELLO_ACK, 0, "\"hostReady\":true");
+            // hello.ack 也带上固件与电量：设备主动发的 hello 在个别重连时序下
+            // 可能没被主机解析（表现为面板固件/电量一直 "—"），而 hello.ack
+            // 是握手闭环必经的一条，主机一定能收到。
+            {
+                char ack_extra[160];
+                const int bat = s_battery_percent;
+                int m = snprintf(ack_extra, sizeof(ack_extra),
+                                 "\"hostReady\":true,\"protocolVersion\":1,\"firmware\":\"%s\"",
+                                 AP_FIRMWARE_VERSION);
+                if (m > 0 && (size_t)m < sizeof(ack_extra) && bat >= 0) {
+                    snprintf(ack_extra + m, sizeof(ack_extra) - m,
+                             ",\"batteryPercent\":%d", bat);
+                }
+                send_control_short(AP_MSG_HELLO_ACK, 0, ack_extra);
+            }
             set_state(AP_LINK_READY);
             return;
         }
@@ -806,6 +820,11 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
 
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "连接断开 reason=%d", event->disconnect.reason);
+        // ★ 每次新连接都要重新发 hello：复位"本连接已发过"标志。
+        //   之前只在主机**退订**时复位；插件/系统直接断开时不会退订，
+        //   于是重连后主机再次订阅也不会触发 hello（cur_notify 已是 true、
+        //   标志还是 true）→ 主机永远拿不到固件版本与电量，面板显示"—"。
+        s_hello_sent = false;
         s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
         s_chunk_payload = FALLBACK_CHUNK_PAYLOAD;
         ap_rx_reset(&s_rx);

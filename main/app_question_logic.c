@@ -195,3 +195,8 @@ int ap_q_row_text(char *out, size_t out_size,
     return snprintf(out, out_size, "跳过此题");
 }
 
+
+bool ap_q_voice_is_tap(uint32_t held_ms)
+{
+    return held_ms < AP_Q_VOICE_TAP_MS;
+}

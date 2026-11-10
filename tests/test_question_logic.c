@@ -188,6 +188,15 @@ static void test_row_text(void)
     expect_str(out, "", "负行号为空");
 }
 
+static void test_voice_tap(void)
+{
+    // 短按/长按的边界：< 300ms 才算"确认"，恰好 300ms 已经算 PTT 录音。
+    assert(ap_q_voice_is_tap(0) && "按下即松也算短按");
+    assert(ap_q_voice_is_tap(AP_Q_VOICE_TAP_MS - 1) && "边界内侧是短按");
+    assert(!ap_q_voice_is_tap(AP_Q_VOICE_TAP_MS) && "边界外侧是长按");
+    assert(!ap_q_voice_is_tap(5000) && "长按录音");
+}
+
 int main(void)
 {
     test_split_options();
@@ -198,6 +207,7 @@ int main(void)
     test_action_json();
     test_row_model();
     test_row_text();
+    test_voice_tap();
     printf("== question logic 测试全部通过 ==\n");
     return 0;
 }

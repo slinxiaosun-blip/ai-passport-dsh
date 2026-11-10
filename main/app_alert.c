@@ -52,6 +52,11 @@ static const tone_t TONES_DECIDED[] = {
 static const tone_t TONES_COMPLETED[] = {
     { 900, 130 }, { 0, 40 }, { 1200, 220 },
 };
+// 按键反馈：极短、偏高的轻点。只求"按到了"的确认感，不喧宾夺主。
+// 音量与提示音共用 alert 音量（系统设置 → 提示音量），0 = 静音。
+static const tone_t TONES_KEY[] = {
+    { 2200, 12 },
+};
 
 static bool s_initialized = false;
 // 提示音量（百分比）：用户可在设备设置页调档，见 app_settings_logic.c 的档位表
@@ -98,6 +103,10 @@ static void play_kind(alert_kind_t kind)
     case ALERT_COMPLETED:
         tones = TONES_COMPLETED;
         count = sizeof(TONES_COMPLETED) / sizeof(TONES_COMPLETED[0]);
+        break;
+    case ALERT_KEY:
+        tones = TONES_KEY;
+        count = sizeof(TONES_KEY) / sizeof(TONES_KEY[0]);
         break;
     case ALERT_DECIDED:
         tones = TONES_DECIDED;

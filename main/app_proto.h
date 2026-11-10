@@ -212,6 +212,7 @@ typedef enum {
     AP_TASK_STATE_IDLE = 0,              // 空闲：没有任务在跑
     AP_TASK_STATE_RUNNING,               // 运行中：正在执行，不用管
     AP_TASK_STATE_WAITING_APPROVAL,      // 待审批：需要按键，会响提示音
+    AP_TASK_STATE_WAITING_QUESTION,      // 待回答：设备上有追问等用户选择
     AP_TASK_STATE_COMPLETED,             // 已完成：刚结束，会响提示音
 } ap_task_state_t;
 

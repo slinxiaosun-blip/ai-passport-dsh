@@ -240,8 +240,9 @@ static void app_voice_task(void *arg)
                  (unsigned)s_session_id, SAMPLE_RATE, BITS, CHANNELS);
         // ★ 不要求 ACK（false）：voice.begin 是通知性消息，同 voice.end 的说明。
         (void)ap_link_send_json(begin, false);
-        // 粘性提示：按住说话期间一直显示，松手后由收尾处隐藏
-        app_ui_post_toast_sticky("开始说话", false);
+        // ★ 不再弹"开始说话"粘性提示：11-09 起录音有独立的全屏录音页
+        //   （AP_SCREEN_PTT / AP_SCREEN_Q_VOICE），提示条会盖住页面里的圆环。
+        //   收尾处仍保留 app_ui_hide_toast()，清掉可能残留的旧提示。
         ESP_LOGI(TAG, "开始录音 session=%u", (unsigned)s_session_id);
 
         // ── 采集循环：每 20ms 读一块 → VAD → 编码 ──

@@ -105,6 +105,9 @@ static long s_run_base_ms = 0;     // 主机给的已运行毫秒（种子）
 static uint32_t s_run_anchor_ms = 0; // 收到种子时的本地单调时钟
 static bool s_run_known = false;   // false = 主机未给种子，不显示
 static int32_t s_run_last_sec = -1; // 上次渲染的秒数，避免每帧重设文本
+// 「已完成」态要显示的最终用时（主机在 task.state 里带 elapsedMs）。
+// -1 = 本次完成没有可信时长，不显示（宁可不显示，也不显示一个猜的数字）。
+static long s_final_elapsed_ms = -1;
 
 static lv_obj_t *s_footer_l1;     // 底栏提示：第一行
 static lv_obj_t *s_footer_l2;     // 底栏提示：第二行
@@ -200,7 +203,9 @@ static uint32_t state_chip_bg(ap_task_state_t st)
 {
     switch (st) {
     case AP_TASK_STATE_RUNNING: return UI_INFO_BG;
-    case AP_TASK_STATE_WAITING_APPROVAL: return UI_WARN_BG;
+    // 用户要求：不单独显示"待审批/待回答"，统一按"运行中"呈现（覆盖页本身可见）。
+    case AP_TASK_STATE_WAITING_APPROVAL:
+    case AP_TASK_STATE_WAITING_QUESTION: return UI_INFO_BG;
     case AP_TASK_STATE_COMPLETED: return UI_ACC_BG;
     case AP_TASK_STATE_IDLE:
     default: return UI_DIM_BG;
@@ -226,8 +231,10 @@ static void state_style(ap_task_state_t st, const char **text, const char **hint
         *color = UI_INFO;
         break;
     case AP_TASK_STATE_WAITING_APPROVAL:
-        *text = "待审批";
-        *color = UI_WARN;
+    case AP_TASK_STATE_WAITING_QUESTION:
+        // 不单独显示这两个状态词（用户 11-10 要求）：状态卡沿用"运行中"。
+        *text = "运行中";
+        *color = UI_INFO;
         break;
     case AP_TASK_STATE_COMPLETED:
         *text = "已完成";
@@ -323,7 +330,19 @@ static void refresh_timer(bool force)
 {
     if (!s_timer_text) return;
 
-    // 非「运行中」一律清空 —— 空闲/待审批/已完成都不该留一个还在走的数字。
+    // 「已完成」：显示主机下发的**最终用时**，静态、不再走秒。
+    // 与运行态共用同一个标签与字体（28px 数字档），所以位置自然落在任务提示下方。
+    if (s_state == AP_TASK_STATE_COMPLETED && s_final_elapsed_ms >= 0) {
+        const int32_t final_sec = (int32_t)(s_final_elapsed_ms / 1000);
+        if (!force && final_sec == s_run_last_sec) return;
+        s_run_last_sec = final_sec;
+        char fin[16];
+        format_elapsed((uint32_t)final_sec, fin, sizeof(fin));
+        lv_label_set_text(s_timer_text, fin);
+        return;
+    }
+
+    // 非「运行中」一律清空 —— 空闲/待审批不该留一个还在走的数字。
     //
     // ★ 这里**每次都读一遍标签实际内容**，而不是靠 `s_run_last_sec == -1`
     //   当"已清空"的标记：标记和标签是两处状态，任何一处漏更新就会在空闲
@@ -448,10 +467,6 @@ static void refresh_state(void)
     //     · 审批挂起但审批页尚未出现 → 明确说"等待授权请求"，让用户知道该等
     //     · 其余情况 → 两行 + 中间发丝线（行框 20 + 缝 8 + 线 1 + 缝 8 + 行框 20）
     switch (s_state) {
-    case AP_TASK_STATE_WAITING_APPROVAL:
-        // 审批页会由主机请求自动弹出；在它出现之前主页没有可执行动作。
-        footer_set_single("等待授权请求", UI_WARN);
-        break;
     default:
         // 底栏用 16px 中文（行高 20）：一行约 13 个字，才装得下三条手势提示
         footer_set_two("长按上键设置 下键看余额", "按住确定说话", UI_SUB);
@@ -598,6 +613,7 @@ static void ui_tick(lv_timer_t *timer)
     app_screens_consume_pending();
     app_screens_tick_voice((uint32_t)(esp_timer_get_time() / 1000));
     app_screens_tick_question((uint32_t)(esp_timer_get_time() / 1000));
+    app_screens_tick_ptt((uint32_t)(esp_timer_get_time() / 1000));
 
     // 电量格每秒刷一次：RSSI 缓存 2 秒一采，太快刷也只是空转。
     {
@@ -666,10 +682,18 @@ static void ui_tick(lv_timer_t *timer)
             s_run_base_ms = s_pending_elapsed_ms;
             s_run_anchor_ms = (uint32_t)(esp_timer_get_time() / 1000);
             s_run_last_sec = -1;   // 强制下一帧渲染
-        } else if (s_state != AP_TASK_STATE_RUNNING) {
-            // 离开运行中就丢掉锚点：已完成/待审批不应带着一个还在走的数字。
+            s_final_elapsed_ms = -1;
+        } else if (s_state == AP_TASK_STATE_COMPLETED) {
+            // 任务完成：主机带来**最终用时**，静态显示（不再走秒）。
+            // 用户要求"任务完成后下面也显示一个完成的时间"。
+            s_final_elapsed_ms = s_pending_elapsed_ms;
             s_run_known = false;
             s_run_last_sec = -1;
+        } else {
+            // 离开运行/完成就丢掉锚点与最终用时：空闲/待审批不该留一个过期数字。
+            s_run_known = false;
+            s_run_last_sec = -1;
+            s_final_elapsed_ms = -1;
         }
         // 记录进入「待审批」的时刻，用于下面的兜底超时
         if (s_state == AP_TASK_STATE_WAITING_APPROVAL && prev != AP_TASK_STATE_WAITING_APPROVAL) {
@@ -861,14 +885,16 @@ static void build_state_card(void)
     lv_obj_set_style_text_line_space(s_state_hint, UI_TEXT_LINE_SPACE, 0);
     lv_label_set_long_mode(s_state_hint, LV_LABEL_LONG_DOT);
 
-    // 运行计时：贴卡片右上角，**28px**（UI_FONT_TIMER，只含数字与冒号）。
+    // 运行计时：在**任务提示**（"N 个任务执行中"）**正下方居中**，28px（UI_FONT_TIMER）。
+    // ★ 11-09 用户两次调整：先要求从右上角移到状态下方，再要求落到任务提示下面。
+    //   最终纵向顺序固定为 信息行 → 提示 → 计时，由 app_ui_theme.h 的
+    //   UI_STATE_HINT_Y / UI_STATE_TIMER_Y 推导，不在渲染处写死坐标。
     // ★ 为什么不和状态条共用 16px 思源：那个字号在桌角得凑近才读得到，
     //   而计时是"要不要现在走过去处理"的判断依据，应当比正文更大一档。
-    // ★ 28px 下 "10:23:45" 实宽 107.4px，右侧 192px 的可用宽度放得下，
+    // ★ 28px 下 "10:23:45" 实宽 107.4px，远小于卡片可用宽度 192px，
     //   跨小时也不用降字号（旧版 16px 点阵时代那套降字号逻辑已删）。
-    //   右对齐 = 右边缘钉死在卡片内边距上，数字变长只向左长。
     s_timer_text = ui_theme_text(s_state_block, "", UI_FONT_TIMER, UI_INFO);
-    lv_obj_align(s_timer_text, LV_ALIGN_TOP_RIGHT, -UI_CARD_PAD_X, UI_STATE_TIMER_Y);
+    lv_obj_align(s_timer_text, LV_ALIGN_TOP_MID, 0, UI_STATE_TIMER_Y);
 }
 
 static void build_footer(void)

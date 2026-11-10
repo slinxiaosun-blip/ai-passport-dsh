@@ -7,7 +7,7 @@
 
 static void test_items(void)
 {
-    assert(AP_SETTINGS_ITEM_COUNT == 4);
+    assert(AP_SETTINGS_ITEM_COUNT == 5);
     const ap_settings_item_def_t *screen = ap_settings_item(AP_SETTINGS_SCREEN_OFF);
     assert(strcmp(screen->name, "熄屏") == 0);
     assert(screen->count == 5);

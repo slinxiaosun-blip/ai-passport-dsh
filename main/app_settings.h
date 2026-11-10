@@ -15,6 +15,7 @@ typedef struct {
     int brightness;       // 屏幕亮度百分比（10/50/75/100）
     int auto_off_min;     // 无任务自动休眠分钟数；0 = 不休眠
     int alert_volume;     // 提示音量百分比；0 = 静音
+    int key_sound;        // 按键音：0 = 关 / 1 = 开
 } ap_settings_t;
 
 /**

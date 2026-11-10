@@ -222,10 +222,10 @@ extern const lv_font_t app_ui_font_timer;
 // 卡片左右内边距（设计稿 §3：徽章 left14、提示 right14）
 #define UI_CARD_PAD_X 14
 
-// 状态卡内部（相对卡片左上角）—— **信息整组居中**
-//     运行计时 10 .. 31     28px 行框 21（贴右上角；只在「运行中」出现）
-//     信息行   57 .. 95     灯 + XL 大字作为一组，**水平居中**（行框 38）
-//     提示    103 .. 155    最多 2 行，与大字同一中线居中
+// 状态卡内部（相对卡片左上角）—— **信息整组居中**，纵向顺序：信息行 → 提示 → 计时
+//     信息行   27 .. 65     灯 + XL 大字作为一组，**水平居中**（行框 38）
+//     提示     73 .. 125    "N 个任务执行中"等主机标题，最多 2 行，居中
+//     运行计时 133 .. 154   28px 行框 21，**在任务提示正下方居中**（只在「运行中」出现）
 //
 // ★ 10-31 用户要求：状态这组信息要居中（原来灯贴左、大字贴左、计时贴右，
 //   整张卡片看起来"散在四个角"）。改法是：灯与大字放进一个横排容器，
@@ -234,12 +234,14 @@ extern const lv_font_t app_ui_font_timer;
 //   "整组居中"要求灯跟着一起挪；逐个写死 x 就得为每个状态词维护一套坐标，
 //   改一个字就要重排一次，且必然有一处会忘。
 //
+// ★ 11-09 用户要求（两次）：先把计时从右上角移到状态下方，再要求它落到
+//   「1 个任务正在进行」这行提示的**下面**。最终顺序固定为 信息行 → 提示 → 计时，
+//   三者在卡片里整体垂直居中；计时与信息行同一条中线（TOP_MID 对齐）。
+//
 // ★ 纵向不是拍出来的数字，是算的：
-//   块高 = 信息行 38 + 缝 8 + 提示 52 = 98
-//   可用区 = 计时下沿 31 .. 卡片底 182（151 高）
-//   上边距 = (151 − 98) / 2 = 26 → 信息行 57..95、提示 103..155
-//   于是上方留 26、下方留 27，视觉上平衡；整块也仍然落在卡片中线上。
-//   （旧版是"灯 14 / 大字 62 / 提示 110"三处硬编码，改字号就得重算三遍。）
+//   块高 = 信息行 38 + 缝 8 + 提示 52 + 缝 8 + 计时 21 = 127
+//   卡片内可用高 182 → 上边距 = (182 − 127) / 2 = 27
+//   → 信息行 27..65、提示 73..125、计时 133..154，上下各留 27/28，视觉平衡。
 //
 // ★ 状态灯为什么是 22×22 而不是设计稿写的 18 高药丸：
 //   ① 18px 是按 11px 西文算的，设备上中文最小 16px（行高 20），18px 的胶囊
@@ -249,12 +251,11 @@ extern const lv_font_t app_ui_font_timer;
 #define UI_STATE_CHIP_H 22
 #define UI_STATE_CHIP_DOT 5         // 灯芯：5px 实色点
 #define UI_STATE_CHIP_GAP 10        // 灯与大字之间（flex 列间距）
-#define UI_STATE_TIMER_Y 10
 
 // ★ 提示只给 **2 行** —— 这是取舍，不是"放不下"。
-//   3 行其实算得开：块高 = 38 + 8 + (3 × 28 − 4) = 126 < 151（可用区）。
-//   不这么做的原因是**居中会把大字顶上去**：3 行时块高 126，上边距只剩 12，
-//   信息行被推到 43..81，大字离开视觉中心 29px，看起来像"整块内容偏上"。
+//   3 行其实算得开：块高 = 38 + 8 + (3 × 28 − 4) + 8 + 21 = 155 < 182（卡高）。
+//   不这么做的原因是**居中会把大字顶上去**：3 行时上边距只剩 13，
+//   信息行被推到 13..51，大字离开视觉中心 29px，看起来像"整块内容偏上"。
 //   主机标题通常一两行就说完了，超出部分用省略号比第 3 行更有信息量。
 #define UI_STATE_HINT_LINES 2
 #define UI_STATE_HINT_H (UI_STATE_HINT_LINES * UI_TEXT_PITCH_CJK - UI_TEXT_LINE_SPACE) // = 52
@@ -263,10 +264,11 @@ extern const lv_font_t app_ui_font_timer;
 // 信息行（灯 + 大字）：行高取 XL 行框，灯在其内纵向居中
 #define UI_STATE_ROW_H UI_LINE_H_XL                                 // = 38
 #define UI_STATE_ROW_GAP 8                                          // 信息行与提示之间
-#define UI_STATE_BLOCK_H (UI_STATE_ROW_H + UI_STATE_ROW_GAP + UI_STATE_HINT_H) // = 98
-#define UI_STATE_BODY_Y (UI_STATE_TIMER_Y + UI_LINE_H_TIMER)         // = 31
-#define UI_STATE_ROW_Y (UI_STATE_BODY_Y + (UI_STATE_CARD_H - UI_STATE_BODY_Y - UI_STATE_BLOCK_H) / 2) // = 57
-#define UI_STATE_HINT_Y (UI_STATE_ROW_Y + UI_STATE_ROW_H + UI_STATE_ROW_GAP)                          // = 103
+#define UI_STATE_HINT_GAP 8                                         // 提示与计时之间
+#define UI_STATE_BLOCK_H (UI_STATE_ROW_H + UI_STATE_ROW_GAP + UI_STATE_HINT_H + UI_STATE_HINT_GAP + UI_LINE_H_TIMER) // = 127
+#define UI_STATE_ROW_Y ((UI_STATE_CARD_H - UI_STATE_BLOCK_H) / 2)      // = 27
+#define UI_STATE_HINT_Y (UI_STATE_ROW_Y + UI_STATE_ROW_H + UI_STATE_ROW_GAP) // = 73
+#define UI_STATE_TIMER_Y (UI_STATE_HINT_Y + UI_STATE_HINT_H + UI_STATE_HINT_GAP) // = 133
 // 灯在信息行里纵向居中的偏移（flex 也会居中，这里给校验脚本一个可算的坐标）
 #define UI_STATE_CHIP_INSET ((UI_STATE_ROW_H - UI_STATE_CHIP_H) / 2) // = 8
 
@@ -349,11 +351,26 @@ extern const lv_font_t app_ui_font_timer;
 #define OV_Q_TEXT_Y (OV_TITLE_H + 6)                        // = 34（摘要行）
 #define OV_Q_TEXT_H UI_LINE_H_CJK                           // = 24
 #define OV_Q_LIST_Y (OV_Q_TEXT_Y + OV_Q_TEXT_H + 4)         // = 62
-#define OV_Q_LIST_H (UI_H - OV_FOOT_H - OV_Q_LIST_Y - 8)    // = 206
+// 选择框下方新增一行「操作提示」（11-09 用户要求）：随光标所在行变化
+// （选项=单击提交、其他=单击提交/长按录音、下一题/跳过各写各的）。
+// 从列表高度里扣掉这一行，避免压到最后一行的行卡。
+#define OV_Q_OP_HINT_H 20
+#define OV_Q_LIST_H (UI_H - OV_FOOT_H - OV_Q_LIST_Y - OV_Q_OP_HINT_H - 10)  // = 184
+#define OV_Q_OP_HINT_Y (OV_Q_LIST_Y + OV_Q_LIST_H + 4)                       // = 250
 
-// 语音输入页（自定义答案）：标题 + 居中状态/识别文字 + 底栏
-#define OV_QV_TEXT_Y 96
-#define OV_QV_TEXT_H 48
+// 语音输入页（自定义答案 / 空闲 PTT 共用）：标题 + 圆环 + 居中状态/识别文字 + 底栏
+// ★ 11-09 用户反馈"圆圈太靠上"：原先圆环 y=24，起点还在标题分隔线（28）之前，
+//   看上去压在标题上。现在把 圆环 + 文字 作为一组在内容区（28..216）垂直居中：
+//   组高 = 圆环 64 + 缝 12 + 文字 48 = 124 → 起点 28 + 32 = 60
+//   → 圆环 60..124、文字 136..184，上下留白对称。
+// ★ 11-09 用户反馈"识别框太小"：圆环从 64 缩到 56 并上移，识别框从 72 加高到 108。
+//   节奏：标题 28 → 圆环 36..92（8px 缝）→ 识别框 100..208（8px 缝）→ 底栏 216。
+#define OV_QV_RING_Y 36
+#define OV_QV_RING_D 56
+#define OV_QV_TEXT_Y 100
+// 识别框（圆角卡）高度：100..208，给底栏（216）留 8px 间隙。
+// ★ 与「识别结果卡」的正文框同款（ui_theme_card + 12/10 内边距 + 竖向滚动）。
+#define OV_QV_TEXT_H 108
 #define OV_Q_ROW_H 30
 #define OV_Q_ROW_GAP 4
 

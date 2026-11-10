@@ -8,13 +8,14 @@
 #include <stdint.h>
 
 #define AP_SETTINGS_MAX_OPTIONS 6
-#define AP_SETTINGS_ITEM_COUNT 4
+#define AP_SETTINGS_ITEM_COUNT 5
 
 typedef enum {
     AP_SETTINGS_SCREEN_OFF = 0,   // 熄屏：0 = 常亮
     AP_SETTINGS_BRIGHTNESS = 1,   // 屏幕亮度（%）：10 / 50 / 75 / 100
     AP_SETTINGS_AUTO_OFF = 2,     // 无任务自动休眠：0 = 不休眠（落地为深睡，见 main/app.c）
     AP_SETTINGS_ALERT_VOLUME = 3, // 提示音量：0 = 静音
+    AP_SETTINGS_KEY_SOUND = 4,    // 按键音：0 = 关 / 1 = 开
 } ap_settings_item_t;
 
 /** 一个设置项的定义：显示名 + 各档文案 + 各档对应的值（分钟 / 音量百分比）。 */
@@ -48,3 +49,4 @@ bool ap_settings_should_power_off(uint32_t idle_ms, int auto_off_min, bool task_
 #define AP_SETTINGS_DEFAULT_AUTO_OFF_MIN 0       // 不关机
 #define AP_SETTINGS_DEFAULT_BRIGHTNESS 75        // 与原先写死的背光 80% 观感接近
 #define AP_SETTINGS_DEFAULT_ALERT_VOLUME 70      // 中
+#define AP_SETTINGS_DEFAULT_KEY_SOUND 1          // 开

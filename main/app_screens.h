@@ -23,6 +23,8 @@ typedef enum {
     AP_SCREEN_VOICE,     // 语音识别结果卡（单击填入 / 双击发送 / 按住重说）
     AP_SCREEN_QUESTION,  // 追问（选项行 + 自定义行 + 跳过）
     AP_SCREEN_Q_VOICE,   // 自定义答案的语音输入页（可放弃返回）
+    AP_SCREEN_PTT,       // 空闲 PTT 的全屏录音页（与 Q_VOICE 同款视觉；不消费按键）
+    AP_SCREEN_Q_RESULT,  // 「其他」语音识别结果（单独一页；确定作答 / 上键重录）
     AP_SCREEN_PLAN,      // 计划评审（要求修改 / 批准计划）
     AP_SCREEN_APPROVAL,  // 审批（优先级最高，会盖住上面所有）
     AP_SCREEN_SETTINGS,  // 系统设置（主页长按上键进入）：熄屏 / 亮度 / 自动休眠 / 提示音量
@@ -92,6 +94,17 @@ void app_screens_tick_voice(uint32_t now_ms);
 
 // 刷新追问/计划评审的倒计时条（真正的超时由主机裁决并回 question.done）。
 void app_screens_tick_question(uint32_t now_ms);
+
+// 识别失败（voice.error）：把「其他」语音页从"识别中…"复原成"按住确定说话"。
+// 任意任务可调用；只置标志，界面动作由 LVGL 任务里的 tick 消费。
+void app_screens_question_voice_failed(void);
+
+// 空闲 PTT 的全屏录音页（与「其他」语音页同款视觉）。
+// recording=true 显示"正在录音…"、false 切"识别中…"；结果/错误/超时都会收起。
+// 任意任务可调用；只置标志，界面动作由 LVGL 任务消费。
+void app_screens_post_ptt_voice(bool recording);
+void app_screens_hide_ptt_voice(void);
+void app_screens_tick_ptt(uint32_t now_ms);
 
 // ── 按键（LVGL 任务内调用）───────────────────────────────────────────────
 

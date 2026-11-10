@@ -12,6 +12,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -72,6 +73,20 @@ int ap_q_row_text(char *out, size_t out_size,
                   const bool *selected, const char labels[][AP_Q_LABEL_SIZE],
                   int option_count, int index, int total,
                   const char *custom, int row);
+
+// ── 「其他」语音页的按压语义（docs/06 §3.3）─────────────────────────────
+//
+// 语音页里「按住确定」是录音；松手时按**按压时长**区分意图：
+//   · 短按且已有 custom 文本 = 确认（单选提交 / 多选回选择页）；
+//   · 短按且没有文本 = 提示"按住确定说话"，留在本页；
+//   · 长按 = 正常录音 → 识别。
+//
+// 之前没有这条区分：短按也会开一段 0 长录音，识别结果回来后页面仍在语音页，
+// 用户再按确认又开录音 —— 表现为"按确认一直循环进语音输入界面"（真机反馈）。
+#define AP_Q_VOICE_TAP_MS 300u
+
+// held_ms < AP_Q_VOICE_TAP_MS 视为"短按/确认"，否则是 PTT 录音。
+bool ap_q_voice_is_tap(uint32_t held_ms);
 
 #ifdef __cplusplus
 }

@@ -181,10 +181,31 @@ static lv_obj_t *s_qvoice;
 static lv_obj_t *s_qvoice_text;
 static lv_obj_t *s_qvoice_hint;
 static lv_obj_t *s_qvoice_title;
+// 空闲 PTT 的录音页：与「其他」语音页同一套视觉（标题 / 圆环 / 文字 / 底栏），
+// 只是没有按键语义、由 app.c 的按住/松开驱动。两处曾各做一版，用户看到
+// "追问里录语音"和"主页按住说话"界面不一样，故统一。
+static lv_obj_t *s_ptt;
+static lv_obj_t *s_ptt_text;
+// 「其他」语音识别结果页：识别完成后单独一页显示文本（用户要求，别挤在语音页里）
+static lv_obj_t *s_qres;
+static lv_obj_t *s_qres_box;
+// 空闲识别结果卡的"按住下键连续滚动"状态（与「其他」结果页同一套）
+static lv_obj_t *s_qres_text;
+static lv_obj_t *s_qres_hint;
+static lv_obj_t *s_qres_sub_hint;   // 正文框下方的按键提示（按住下键滚动）
+static lv_obj_t *s_qres_title;
+static lv_obj_t *s_ptt_hint;
+static lv_obj_t *s_ptt_title;
+static volatile bool s_ptt_dirty = false;
+static volatile bool s_ptt_show = false;
+static volatile bool s_ptt_recognizing = false;
+static uint32_t s_ptt_deadline_ms = 0;   // 录音/识别页的兜底收起时刻
 static lv_obj_t *s_q_rows[Q_ROW_MAX];
 static lv_obj_t *s_q_row_dot[Q_ROW_MAX];
 static lv_obj_t *s_q_row_text[Q_ROW_MAX];
 static lv_obj_t *s_q_hint;
+// 选择框下方的操作提示（随光标变化）；页脚仍留给倒计时/发送失败。
+static lv_obj_t *s_q_op_hint;
 static lv_obj_t *s_q_title;
 
 static ap_question_msg_t s_q;
@@ -192,12 +213,20 @@ static char s_q_labels[AP_Q_MAX_OPTIONS][AP_Q_LABEL_SIZE];
 static bool s_q_selected[AP_Q_MAX_OPTIONS];
 static int s_q_option_count = 0;
 static int s_q_cursor = 0;
+// 本题的超时截止时刻（主机 question.req 里的 timeoutMs 是剩余毫秒）。
+// 0 = 本题不超时（计划待审），页脚保持操作提示。
+static uint32_t s_q_deadline_ms = 0;
+static int32_t s_q_last_remaining_s = -1;   // 上次渲染的剩余秒，避免每帧重设
 static volatile bool s_q_voice_mode = false;   // 语音输入页是否在前台（跨任务读写）
 // ★ 识别结果由 app_task（链路消息队列）投递到这里，**不能在那里碰 LVGL**。
 //   曾经直接在回调里 show_panel/refresh_*，导致 LVGL 内部刷新区链表被并发破坏，
 //   真机现象是整机冻死（WDT 反复报 IDLE 饿死、PC 落在 lv_inv_area 死循环）。
 static volatile bool s_q_voice_result_dirty = false;
 static char s_q_voice_result_text[512];
+// 识别失败（voice.error）也要把语音页从"识别中…"复原成"按住确定说话"，
+// 否则用户以为还在识别、按确认又只开一段空录音。
+static volatile bool s_q_voice_failed_dirty = false;
+static uint32_t s_qvoice_press_ms = 0;   // 本次 OK 按下时刻（仅 LVGL 任务读写）
 static char s_q_custom[Q_CUSTOM_MAX];
 
 static volatile bool s_q_dirty = false;
@@ -338,6 +367,61 @@ static lv_obj_t *make_overlay(const char *title, lv_obj_t **out_hint, lv_obj_t *
 
 // ── 创建 ──────────────────────────────────────────────────────────────────
 
+/** 一个空心细环（科技感 HUD 的基本单元）：透明底 + 描边圆。 */
+static lv_obj_t *make_hollow_ring(lv_obj_t *parent, int size, int x, int y,
+                                  uint32_t color, lv_opa_t opa, int border)
+{
+    lv_obj_t *ring = lv_obj_create(parent);
+    lv_obj_remove_style_all(ring);
+    lv_obj_remove_flag(ring, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(ring, size, size);
+    lv_obj_set_pos(ring, x, y);
+    lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(ring, border, 0);
+    lv_obj_set_style_border_color(ring, lv_color_hex(color), 0);
+    lv_obj_set_style_border_opa(ring, opa, 0);
+    return ring;
+}
+
+/** 语音录入页共用的圆形声波装饰（「其他」追问页与空闲 PTT 页同款）。
+ *  ★ 11-09 用户要求"空心、双环结构"：外环 2px 强调色 + 内环 1px 半透明强调色，
+ *  环间留 10px 呼吸，中央完全空心 —— 简洁的双环 HUD，不再有实心点或刻度。
+ *  纯装饰，不参与按键命中。 */
+static void add_voice_ring(lv_obj_t *panel)
+{
+    const int d = OV_QV_RING_D;
+    const int x = (UI_W - d) / 2;
+    const int y = OV_QV_RING_Y;
+
+    make_hollow_ring(panel, d, x, y, UI_ACCENT, LV_OPA_90, 2);
+    make_hollow_ring(panel, d - 20, x + 10, y + 10, UI_ACCENT, LV_OPA_50, 1);
+}
+
+/** 语音页文字区：与「识别结果卡」同款的圆角卡框 + 可滚动正文。
+ *
+ * ★ 用户反馈"识别框不一样"：空闲流程的识别结果放在卡框里，而「其他」页只是
+ *   一段裸文字。这里统一成同一个 ui_theme_card（同底色/描边/圆角/内边距/滚动），
+ *   两个语音页与结果卡看起来是同一套"识别框"。
+ *   文本在框内左对齐、顶部起排 —— 与结果卡一致（居中腰斩长句的可读性）。 */
+static lv_obj_t *add_voice_text_box(lv_obj_t *panel, const char *text)
+{
+    lv_obj_t *box = lv_obj_create(panel);
+    ui_theme_card(box, UI_CARD, UI_STROKE, UI_R_CARD);
+    lv_obj_set_pos(box, 0, OV_QV_TEXT_Y);
+    lv_obj_set_size(box, UI_W, OV_QV_TEXT_H);
+    lv_obj_set_scroll_dir(box, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(box, LV_SCROLLBAR_MODE_AUTO);
+
+    lv_obj_t *label = ui_theme_text(box, text, UI_FONT_CJK, UI_FG);
+    lv_obj_set_pos(label, 12, 10);
+    lv_obj_set_width(label, UI_W - 12 - 10 - 6);   // 右侧 10 内边距 + 6 滚动条
+    lv_obj_set_height(label, LV_SIZE_CONTENT);
+    lv_obj_set_style_text_line_space(label, UI_TEXT_LINE_SPACE, 0);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    return label;
+}
+
 void app_screens_create(void)
 {
     if (s_balance) return;
@@ -406,7 +490,7 @@ void app_screens_create(void)
     // 底栏只有 208px（≈10 个汉字），装不下三条按键说明；这里给结果卡单独留三行
     // （用户指定文案），并把正文区高度相应减掉 OV_VOICE_KEYS_H。
     s_voice_keys = ui_theme_text(s_voice,
-                                 "单击上键 删除/返回\n单击确认 填入\n长按确认 发送",
+                                 "单击上键 删除/返回\n单击确认 填入  长按 发送\n下键 翻页",
                                  UI_FONT_CJK16, UI_DIM);
     lv_obj_set_pos(s_voice_keys, UI_PAD, OV_VOICE_KEYS_Y);
     lv_obj_set_size(s_voice_keys, UI_W - UI_PAD * 2, OV_VOICE_KEYS_H);
@@ -431,6 +515,12 @@ void app_screens_create(void)
     lv_obj_set_scroll_dir(q_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(q_list, LV_SCROLLBAR_MODE_AUTO);
 
+    // 选择框下方的操作提示行（随光标所在行变化）
+    s_q_op_hint = ui_theme_text(s_question, "", UI_FONT_CJK16, UI_DIM);
+    lv_obj_set_pos(s_q_op_hint, UI_PAD, OV_Q_OP_HINT_Y);
+    lv_obj_set_size(s_q_op_hint, UI_W - UI_PAD * 2, OV_Q_OP_HINT_H);
+    lv_obj_set_style_text_align(s_q_op_hint, LV_TEXT_ALIGN_CENTER, 0);
+
     for (int i = 0; i < Q_ROW_MAX; i++) {
         const int y = i * (OV_Q_ROW_H + OV_Q_ROW_GAP);
         lv_obj_t *row = lv_obj_create(q_list);
@@ -450,31 +540,38 @@ void app_screens_create(void)
 
     // ══ 语音输入页（自定义答案：独立一页，可放弃返回选择界面）══
     s_qvoice = make_overlay("语音输入", &s_qvoice_hint, &s_qvoice_title, NULL);
+    add_voice_ring(s_qvoice);
+    s_qvoice_text = add_voice_text_box(s_qvoice, "按住确定说话");
 
-    // 圆形按钮（设计稿 §4「语音输入 · 圆形声波按钮」）：外圈细描边 + 中心实心点。
-    // 纯装饰，不参与按键命中 —— 真正的交互仍是"按住确定说话"，
-    // 所以这里不能做成看起来可以点的按钮（会误导用户去点屏幕）。
-    {
-        const int d = 64;
-        lv_obj_t *ring = lv_obj_create(s_qvoice);
-        ui_theme_pill(ring, UI_ACC_BG);
-        lv_obj_set_size(ring, d, d);
-        lv_obj_set_pos(ring, (UI_W - d) / 2, 24);
-        lv_obj_set_style_border_width(ring, 2, 0);
-        lv_obj_set_style_border_color(ring, lv_color_hex(UI_ACCENT), 0);
+    // ══ 空闲 PTT 录音页（与上面同款视觉；按键仍由 app.c 的按住/松开驱动）══
+    s_ptt = make_overlay("语音输入", &s_ptt_hint, &s_ptt_title, NULL);
+    add_voice_ring(s_ptt);
+    s_ptt_text = add_voice_text_box(s_ptt, "正在录音…");
+    // 录音页不是"确定键返回"的交互页：清掉 make_overlay 的默认底栏文案
+    if (s_ptt_hint) lv_label_set_text(s_ptt_hint, "");
 
-        lv_obj_t *core = lv_obj_create(ring);
-        ui_theme_pill(core, UI_ACCENT);
-        lv_obj_set_size(core, 18, 18);
-        lv_obj_align(core, LV_ALIGN_CENTER, 0, 0);
-    }
+    // ══ 「其他」识别结果页（单独一页，与空闲流程的结果卡同构）══
+    s_qres = make_overlay("识别结果", &s_qres_hint, &s_qres_title, NULL);
+    s_qres_box = lv_obj_create(s_qres);
+    ui_theme_card(s_qres_box, UI_CARD, UI_STROKE, UI_R_CARD);
+    lv_obj_set_pos(s_qres_box, 0, OV_VOICE_TEXT_Y);
+    // 正文框下留 22px 给"按住下键滚动"提示
+    lv_obj_set_size(s_qres_box, UI_W, UI_H - OV_FOOT_H - OV_VOICE_TEXT_Y - 8 - 22);
+    lv_obj_set_scroll_dir(s_qres_box, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(s_qres_box, LV_SCROLLBAR_MODE_AUTO);
+    // ★ 关掉弹性回弹：否则按住下键在末尾会继续"拉出"空白（看起来可以无限下拉）。
+    lv_obj_remove_flag(s_qres_box, LV_OBJ_FLAG_SCROLL_ELASTIC);
 
-    s_qvoice_text = ui_theme_text(s_qvoice, "按住确定说话", UI_FONT_CJK, UI_FG);
-    lv_obj_set_pos(s_qvoice_text, 0, OV_QV_TEXT_Y);
-    lv_obj_set_size(s_qvoice_text, UI_W, OV_QV_TEXT_H);
-    lv_obj_set_style_text_align(s_qvoice_text, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_line_space(s_qvoice_text, UI_TEXT_LINE_SPACE, 0);
-    lv_label_set_long_mode(s_qvoice_text, LV_LABEL_LONG_WRAP);
+    s_qres_sub_hint = ui_theme_text(s_qres, "单击填入 长按提交", UI_FONT_CJK16, UI_DIM);
+    lv_obj_set_pos(s_qres_sub_hint, UI_PAD, UI_H - OV_FOOT_H - 20 - 2);
+    lv_obj_set_size(s_qres_sub_hint, UI_W - UI_PAD * 2, 20);
+    lv_obj_set_style_text_align(s_qres_sub_hint, LV_TEXT_ALIGN_CENTER, 0);
+    s_qres_text = ui_theme_text(s_qres_box, "", UI_FONT_CJK, UI_FG);
+    lv_obj_set_pos(s_qres_text, 12, 10);
+    lv_obj_set_width(s_qres_text, UI_W - 12 - 10 - 6);
+    lv_obj_set_height(s_qres_text, LV_SIZE_CONTENT);
+    lv_obj_set_style_text_line_space(s_qres_text, UI_TEXT_LINE_SPACE, 0);
+    lv_label_set_long_mode(s_qres_text, LV_LABEL_LONG_WRAP);
 
     // ══ 审批 ══
     s_approval = make_overlay("等待审批", &s_appr_hint, NULL, NULL);
@@ -572,6 +669,8 @@ void app_screens_destroy(void)
     if (s_voice) lv_obj_delete(s_voice);
     if (s_question) lv_obj_delete(s_question);
     if (s_qvoice) lv_obj_delete(s_qvoice);
+    if (s_ptt) lv_obj_delete(s_ptt);
+    if (s_qres) lv_obj_delete(s_qres);
     if (s_settings) lv_obj_delete(s_settings);
     if (s_pair) lv_obj_delete(s_pair);
     s_approval = NULL;
@@ -579,6 +678,8 @@ void app_screens_destroy(void)
     s_voice = NULL;
     s_question = NULL;
     s_qvoice = NULL;
+    s_ptt = NULL;
+    s_qres = NULL;
     s_settings = NULL; s_settings_hint = NULL;
     s_pair = NULL; s_pair_code_text = NULL; s_pair_sub_text = NULL;
     s_set_pair_row = NULL; s_set_pair_dot = NULL; s_set_pair_text = NULL;
@@ -589,8 +690,10 @@ void app_screens_destroy(void)
     s_appr_tool = NULL; s_appr_hint = NULL;
     s_voice_text = NULL; s_voice_hint = NULL; s_voice_keys = NULL; s_voice_box = NULL;
     s_voice_foot_rule = NULL;
-    s_q_text = NULL; s_q_hint = NULL;
+    s_q_text = NULL; s_q_hint = NULL; s_q_op_hint = NULL;
     s_qvoice_text = NULL; s_qvoice_hint = NULL;
+    s_ptt_text = NULL; s_ptt_hint = NULL;
+    s_qres_text = NULL; s_qres_hint = NULL; s_qres_box = NULL; s_qres_sub_hint = NULL;
     for (int i = 0; i < APPR_OPTIONS; i++) {
         s_appr_option[i] = NULL; s_appr_opt_dot[i] = NULL; s_appr_opt_text[i] = NULL;
     }
@@ -613,6 +716,8 @@ static lv_obj_t *panel_of(ap_screen_t which)
         case AP_SCREEN_VOICE:      return s_voice;
         case AP_SCREEN_QUESTION:   return s_question;
         case AP_SCREEN_Q_VOICE:    return s_qvoice;
+        case AP_SCREEN_PTT:        return s_ptt;
+        case AP_SCREEN_Q_RESULT:   return s_qres;
         case AP_SCREEN_PLAN:       return s_question;
         case AP_SCREEN_APPROVAL:   return s_approval;
         case AP_SCREEN_SETTINGS:   return s_settings;
@@ -738,6 +843,9 @@ void app_screens_show_voice_result(const char *result_id, const char *text)
 {
     if (!s_voice) return;
 
+    // 识别完成：录音页使命结束（结果卡马上接管），别让两页同时挂着。
+    s_ptt_show = false;
+
     snprintf(s_voice_id, sizeof(s_voice_id), "%s", result_id ? result_id : "");
     char buf[VOICE_TEXT_MAX];
     clean(text, buf, sizeof(buf));
@@ -771,6 +879,7 @@ void app_screens_tick_voice(uint32_t now)
 static void refresh_question_rows(void);
 static void refresh_question_hint(void);
 static void consume_q_voice_result(void);   // LVGL 任务里消费语音识别结果
+static void consume_q_voice_failed(void);   // LVGL 任务里复原"识别中…"
 static bool send_q_pick(bool skipped);
 
 /** 行模型（用户决策 2026-10-06）：选项 + 其他 + [下一题] + 跳过。
@@ -805,8 +914,27 @@ static void q_finish(const char *toast_text, bool urgent)
 {
     app_screens_hide(AP_SCREEN_QUESTION);
     app_screens_hide(AP_SCREEN_Q_VOICE);
+    app_screens_hide(AP_SCREEN_Q_RESULT);
     app_screens_hide(AP_SCREEN_PLAN);
     if (toast_text) app_ui_post_toast(toast_text, urgent);
+}
+
+/** 结果页「下键翻页」：每次翻一屏；已在最后一页时回到首页。
+ *
+ * 方向沿用真机验证过的 -dy（+dy 在这套配置里是往上滚）。
+ * 页面高度取容器可视高度减 20px 作为重叠，避免上一页最后一行被完全切掉。 */
+static void page_down_box(lv_obj_t *box)
+{
+    if (!box) return;
+    const lv_coord_t bottom = lv_obj_get_scroll_bottom(box);
+    if (bottom <= 0) {
+        lv_obj_scroll_to_y(box, 0, LV_ANIM_ON);   // 最后一页 → 首页
+        return;
+    }
+    lv_coord_t page = lv_obj_get_height(box) - 20;
+    if (page < UI_TEXT_PITCH_CJK) page = UI_TEXT_PITCH_CJK;
+    if (page > bottom) page = bottom;
+    lv_obj_scroll_by(box, 0, -page, LV_ANIM_ON);
 }
 
 /** 出站发送 + 失败反馈（失败不静默，底栏给"重试"指引）。 */
@@ -907,6 +1035,10 @@ static void refresh_question_rows(void)
         }
         lv_obj_remove_flag(s_q_rows[i], LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(s_q_row_text[i], buf);
+        // 选项过长时滚动播放（11-09 用户要求）：**只让选中行跑马灯**，
+        // 未选中行保持省略号 —— 否则整屏文字都在动，反而看不清当前光标在哪。
+        lv_label_set_long_mode(s_q_row_text[i],
+                               sel ? LV_LABEL_LONG_SCROLL_CIRCULAR : LV_LABEL_LONG_DOT);
         // 选中态：色底 + 2px 描边 + 圆点亮起（三重冗余，见 row_set_selected）
         row_set_selected(s_q_rows[i], s_q_row_dot[i], s_q_row_text[i], sel, UI_ACCENT);
     }
@@ -918,20 +1050,25 @@ static void refresh_question_rows(void)
 
 static void refresh_question_hint(void)
 {
-    if (!s_q_hint) return;
+    if (!s_q_op_hint) return;
     const char *text;
     uint32_t color = UI_DIM;
+    const int cursor = s_q_cursor;
     if (s_q.is_plan) {
-        text = "上/下选择 确定执行";
-    } else if (s_q.multi_select) {
-        text = "单击勾选 长按提交";   // 多选题没有提交行，长按确定提交
+        text = "上/下选择 单击执行";
+    } else if (cursor == q_custom_row()) {
+        // 「其他」行：单击提交已录入文本，长按开始语音输入
+        text = "单击提交 长按录音";
+    } else if (cursor < s_q_option_count) {
+        text = s_q.multi_select ? "单击勾选 长按提交" : "上/下选择 单击提交";
+    } else if (q_has_next_row() && cursor == q_next_row()) {
+        text = "单击进入下一题";
     } else {
-        text = "上/下选择 确定执行";
+        text = "单击跳过此题";
     }
-    // 提示行始终重设：发送失败路径会把这里换成"发送失败，请重试"，
-    // 缓存文本指针会让失败提示永远留在屏上。单行小标签的代价可忽略。
-    lv_label_set_text(s_q_hint, text);
-    lv_obj_set_style_text_color(s_q_hint, lv_color_hex(color), 0);
+    // 操作提示写在选择框下方的新行；页脚（s_q_hint）留给倒计时/发送失败。
+    lv_label_set_text(s_q_op_hint, text);
+    lv_obj_set_style_text_color(s_q_op_hint, lv_color_hex(color), 0);
 }
 /** 显示一题（question.req 到达；也用于 question.nav 换题）。 */
 static void show_question(const ap_question_msg_t *q)
@@ -949,12 +1086,21 @@ static void show_question(const ap_question_msg_t *q)
     s_q_voice_mode = false;
     // 计划待审默认停在「同意执行」（用户要求）；选择题仍从第一项开始。
     s_q_cursor = s_q.is_plan ? 1 : 0;
+    // 页脚倒计时：timeoutMs 是**剩余**毫秒（主机每次下发都重算），锚到本地单调时钟。
+    s_q_deadline_ms = s_q.timeout_ms > 0 ? now_ms() + s_q.timeout_ms : 0;
+    s_q_last_remaining_s = -1;
+    // 默认不超时（timeout_ms=0）时页脚不显示倒计时；清掉上一题可能残留的文案。
+    if (s_q_deadline_ms == 0 && s_q_hint) lv_label_set_text(s_q_hint, "");
 
     char title[48];
     if (s_q.is_plan) {
         snprintf(title, sizeof(title), "计划待审");
     } else {
-        snprintf(title, sizeof(title), "问题 %d/%d", s_q.index + 1, s_q.total > 0 ? s_q.total : 1);
+        // ★ 标题直接写状态词「待回答」（与审批页的「等待审批」同构）：
+        //   问题页是全屏的，状态卡会被盖住；用户要求「待回答」要看得见，
+        //   so 把状态放在页面上，而不是只藏在背后的卡里。
+        snprintf(title, sizeof(title), "待回答 %d/%d",
+                 s_q.index + 1, s_q.total > 0 ? s_q.total : 1);
     }
     if (s_q_title) lv_label_set_text(s_q_title, title);
 
@@ -972,11 +1118,35 @@ static void show_question(const ap_question_msg_t *q)
 
 void app_screens_tick_question(uint32_t now)
 {
-    // 倒计时条目前只做视觉提示（可在后续加 lv_bar）；真正的超时由主机裁决
-    // 并回 question.done —— 设备不自作主张替用户交答案或取消。
-    (void)now;
     // 跨任务投递的语音识别结果在这里落地（本函数运行在 LVGL 任务里）
     consume_q_voice_result();
+    consume_q_voice_failed();
+
+
+    // ── 页脚倒计时 ────────────────────────────────────────────────────────
+    // 用户要求把"还剩多久"写在页脚提示行（"剩余 4:32"）。真正的超时仍由主机
+    // 裁决并回 question.done —— 设备只是显示，不自作主张替用户交答案或取消。
+    if ((s_current == AP_SCREEN_QUESTION || s_current == AP_SCREEN_PLAN) &&
+        s_q_deadline_ms > 0 && s_q_hint) {
+        // 发送失败提示优先留在屏上，别被倒计时一秒内覆盖掉
+        const char *cur = lv_label_get_text(s_q_hint);
+        if (!cur || strstr(cur, "发送失败") == NULL) {
+            const int32_t remain_ms = (int32_t)(s_q_deadline_ms - now);
+            const int32_t remain_s = remain_ms > 0 ? (remain_ms + 999) / 1000 : 0;
+            if (remain_s != s_q_last_remaining_s) {
+                s_q_last_remaining_s = remain_s;
+                char buf[48];
+                if (remain_s > 0) {
+                    snprintf(buf, sizeof(buf), "剩余 %d:%02d", (int)(remain_s / 60), (int)(remain_s % 60));
+                } else {
+                    snprintf(buf, sizeof(buf), "已超时，请在电脑端操作");
+                }
+                lv_label_set_text(s_q_hint, buf);
+                lv_obj_set_style_text_color(s_q_hint,
+                                            lv_color_hex(remain_s > 0 ? UI_SUB : UI_WARN), 0);
+            }
+        }
+    }
 }
 
 // ── 追问/计划评审的按键 ────────────────────────────────────────────────────
@@ -991,63 +1161,124 @@ static void q_advance_or_submit(void)
     }
 }
 
-/** 进入语音输入页（自定义答案）：按住确定说话、松手识别，上键单击清除、长按放弃回主页。 */
+/** 进入语音输入页（自定义答案）：按住确定说话、松开识别；短按=确认，上键=清除/放弃。 */
 static void show_qvoice(void)
 {
     if (!s_qvoice) return;
     s_q_voice_mode = true;
+    s_qvoice_press_ms = 0;
+    // ★ 用户要求：语音输入页**不显示识别内容**——它只负责录音/识别状态，
+    //   识别文本只在「识别结果」独立页显示。这里永远只写状态文案。
     if (s_qvoice_text) {
         lv_label_set_text(s_qvoice_text, "按住确定说话");
         lv_obj_set_style_text_color(s_qvoice_text, lv_color_hex(UI_FG), 0);
     }
     if (s_qvoice_hint) {
-        lv_label_set_text(s_qvoice_hint, "上键清除 长按放弃");
+        lv_label_set_text(s_qvoice_hint, "上键返回");
         lv_obj_set_style_text_color(s_qvoice_hint, lv_color_hex(UI_DIM), 0);
     }
     show_panel(AP_SCREEN_Q_VOICE);
 }
 
+/** 语音页「确定确认」：单选直接提交；多选回选择页继续勾（长按确定提交整批）。 */
+/** 短按确定 = **填入**（不提交），回到选择页；与空闲结果卡的"单击填入"同一语义。
+ *  单选要把 Recommended 预选草稿清掉：custom 与选项互斥（docs/06 §3.3）。 */
+static void fill_qvoice(void)
+{
+    s_q_voice_mode = false;
+    if (!s_q.multi_select) memset(s_q_selected, 0, sizeof(s_q_selected));
+    (void)send_q_pick(false);
+    if (s_qvoice_text) {
+        lv_label_set_text(s_qvoice_text, "按住确定说话");
+        lv_obj_set_style_text_color(s_qvoice_text, lv_color_hex(UI_DIM), 0);
+    }
+    show_panel(s_q.is_plan ? AP_SCREEN_PLAN : AP_SCREEN_QUESTION);
+    refresh_question_rows();
+    refresh_question_hint();
+    app_ui_post_toast("已填入，长按确定提交", false);
+}
+
+/** 长按确定 = **提交**（发送），与空闲结果卡的"长按发送"同一语义。
+ *  单选清掉选项（custom 互斥），多选保留 selected + custom 一起提交。 */
+static void commit_qvoice(void)
+{
+    s_q_voice_mode = false;
+    if (!s_q.multi_select) memset(s_q_selected, 0, sizeof(s_q_selected));
+    if (send_q_pick(false) && send_q_answer("submit")) q_finish("已提交", false);
+}
+
+/** 显示「其他」的识别结果页（单独一页）。文本已在 s_q_custom，这里只负责呈现。 */
+static void show_q_result(void)
+{
+    if (!s_qres) return;
+    if (s_qres_text) {
+        lv_label_set_text(s_qres_text, s_q_custom[0] ? s_q_custom : "（没有识别到内容）");
+        lv_obj_set_style_text_color(s_qres_text, lv_color_hex(UI_FG), 0);
+    }
+    if (s_qres_hint) lv_label_set_text(s_qres_hint, "下键翻页 上键重录");
+    if (s_qres_box) lv_obj_scroll_to_y(s_qres_box, 0, LV_ANIM_OFF);
+    s_q_voice_mode = false;
+    show_panel(AP_SCREEN_Q_RESULT);
+}
+
 /** 语音输入页按键：PTT 录音 + 放弃返回选择界面。 */
 static bool handle_qvoice_key(int btn, int event)
 {
-    if (btn == APP_UI_BTN_UP && event == APP_UI_EV_LONG) {
-        // 长按上键 = **放弃本次语音输入并回主页面**（用户要求）：
-        // 停止录音、丢弃识别结果与已输入内容，并把"已清空"同步给主机；
-        // 该追问在主机侧仍然挂起，可以继续在电脑上回答。
+    // ★ 上键 = **只返回**（用户明确要求）：语音页已不回显文字，没有"清除"的对象；
+    //   单击/长按都回到选择页，已录入的 custom 文本保留（在选择页的「其他」行可见）。
+    if (btn == APP_UI_BTN_UP && (event == APP_UI_EV_CLICK || event == APP_UI_EV_LONG)) {
         app_voice_stop();   // 不前置判断 recording()：任务可能还没醒
         s_q_voice_mode = false;
-        s_q_custom[0] = '\0';
-        (void)send_q_pick(false);
-        app_screens_hide(AP_SCREEN_Q_VOICE);
-        app_screens_hide(s_q.is_plan ? AP_SCREEN_PLAN : AP_SCREEN_QUESTION);
-        app_ui_post_toast("已放弃语音输入", false);
-        return true;
-    }
-    if (btn == APP_UI_BTN_UP && event == APP_UI_EV_CLICK) {
-        // 单击上键 = **清除当前输入内容**（用户要求）：清空自定义答案并同步主机，留在本页
-        s_q_custom[0] = '\0';
-        (void)send_q_pick(false);
+        show_panel(s_q.is_plan ? AP_SCREEN_PLAN : AP_SCREEN_QUESTION);
         refresh_question_rows();
-        app_ui_post_toast("已清除输入内容", false);
+        refresh_question_hint();
+        app_ui_post_toast("已返回选择页", false);
         return true;
     }
     if (btn == APP_UI_BTN_OK) {
         if (event == APP_UI_EV_PRESS) {
+            s_qvoice_press_ms = now_ms();
             (void)app_voice_start();
             if (s_qvoice_text) {
                 lv_label_set_text(s_qvoice_text, "正在录音…");
                 lv_obj_set_style_text_color(s_qvoice_text, lv_color_hex(UI_WARN), 0);
             }
             if (s_qvoice_hint) lv_label_set_text(s_qvoice_hint, "松手结束");
-        } else if (event == APP_UI_EV_RELEASE) {
+            return true;
+        }
+        if (event == APP_UI_EV_RELEASE) {
+            // ★ 语音页可能是**长按「其他」行直接打开**的：那次按下的 PRESS 发生在
+            //   问题页，本页从没收到过 PRESS。若不拦住，这次 RELEASE 会被当成
+            //   "在语音页松手"，页面立刻进「识别中…」，可根本没录音、结果永远不来
+            //   —— 真机反馈的"卡在语音识别页面 / 跳不到识别页"。
+            if (s_qvoice_press_ms == 0) return true;
             // ★ 不前置判断 recording()：快速点按时语音任务可能还没醒（state 仍 IDLE），
             //   前置判断会漏掉这次停止 —— 录音一路录到 VAD/上限（主页 PTT 同款约定）。
+            const uint32_t held_ms = now_ms() - s_qvoice_press_ms;
             app_voice_stop();
+            // ★ 短按 = 确认，不是"再录一次"：之前短按也会开一段 0 长录音，
+            //   识别结果回来页面仍在语音页，用户再按确定又开录音 —— 表现为
+            //   "按确认一直循环进语音输入界面"（真机反馈）。
+            if (ap_q_voice_is_tap(held_ms)) {
+                if (s_q_custom[0] != '\0') {
+                    fill_qvoice();
+                } else {
+                    if (s_qvoice_text) {
+                        lv_label_set_text(s_qvoice_text, "按住确定说话");
+                        lv_obj_set_style_text_color(s_qvoice_text, lv_color_hex(UI_FG), 0);
+                    }
+                    if (s_qvoice_hint) lv_label_set_text(s_qvoice_hint, "上键返回");
+                    app_ui_post_toast("按住确定说话", false);
+                }
+                return true;
+            }
             if (s_qvoice_text) {
                 lv_label_set_text(s_qvoice_text, "识别中…");
                 lv_obj_set_style_text_color(s_qvoice_text, lv_color_hex(UI_DIM), 0);
             }
-            if (s_qvoice_hint) lv_label_set_text(s_qvoice_hint, "上键清除 长按放弃");
+            // 与空闲 PTT 录音页保持同构：识别中底栏留空（两边都只剩主文案）。
+            if (s_qvoice_hint) lv_label_set_text(s_qvoice_hint, "");
+            return true;
         }
         // CLICK 是松手后的余波：吃掉，别漏到主页触发其它动作
         return true;
@@ -1066,8 +1297,18 @@ static bool handle_question_key(int btn, int event)
     }
     // ★ 长按确定 = 提交整批（多选题的出口）。单选末题单击即提交，用不到；
     //   设备上不再有"提交"行 —— 选项行之外只保留 其他 / [下一题] / 跳过。
+    //
+    // ★ 例外：「其他」行**还没录入文本**时长按 = 进入语音页，而不是提交整批。
+    //   真机反馈："选『其他』会出现一个已提交的提示" —— 原因是长按确定是提交快捷手势，
+    //   用户按住「其他」稍久就被当成提交，整题直接结了。这里把"想录语音"的意图
+    //   优先接住；已经录过文本时长按仍按原语义提交（多选带 custom 提交的出口）。
     if (btn == APP_UI_BTN_OK && event == APP_UI_EV_LONG) {
         if (s_q.is_plan) return true;   // 计划页长按无动作（防误触）
+        // 「其他」行：**长按 = 语音输入**（用户 11-09 明确要求）。
+        if (s_q_cursor == q_custom_row()) {
+            show_qvoice();
+            return true;
+        }
         if (send_q_pick(false) && send_q_answer("submit")) q_finish("已提交", false);
         return true;
     }
@@ -1077,11 +1318,13 @@ static bool handle_question_key(int btn, int event)
     if (btn == APP_UI_BTN_UP) {
         s_q_cursor = ap_q_cursor_move(s_q_cursor, rows, -1);
         refresh_question_rows();
+        refresh_question_hint();
         return true;
     }
     if (btn == APP_UI_BTN_DOWN) {
         s_q_cursor = ap_q_cursor_move(s_q_cursor, rows, 1);
         refresh_question_rows();
+        refresh_question_hint();
         return true;
     }
     if (btn != APP_UI_BTN_OK) return true;
@@ -1121,8 +1364,14 @@ static bool handle_question_key(int btn, int event)
         return true;
     }
     if (s_q_cursor == q_custom_row()) {
-        // 自定义行：按确定 = 进**独立的语音输入页**（可放弃返回，用户决策）
-        show_qvoice();
+        // ★ 「其他」行：**单击 = 提交**（与其他选项一致）。文本来自之前录的语音；
+        //   还没录过就提示长按录音，不要用一个空答案把题结掉。
+        if (s_q_custom[0] == '\0') {
+            app_ui_post_toast("长按确定说话", false);
+            return true;
+        }
+        if (!s_q.multi_select) memset(s_q_selected, 0, sizeof(s_q_selected));
+        if (send_q_pick(false) && send_q_answer("submit")) q_finish("已提交", false);
         return true;
     }
     if (q_has_next_row() && s_q_cursor == q_next_row()) {
@@ -1167,12 +1416,35 @@ static void consume_q_voice_result(void)
     }
     clean(s_q_voice_result_text, s_q_custom, sizeof(s_q_custom));
     (void)send_q_pick(false);
-    // ★ 识别完成 → 自动回到选择界面：自定义行显示识别文本，
-    //   用户可以接着选别的选项，或者再按确定重新录一次。
-    show_panel(s_q.is_plan ? AP_SCREEN_PLAN : AP_SCREEN_QUESTION);
+    // ★ 识别完成 → 切到**单独的识别结果页**（用户要求：别挤在语音页里）。
+    //   语音页只负责录音/识别状态；结果页负责阅读 + 确认/重录。
+    s_q_voice_mode = false;
+    show_q_result();
     refresh_question_rows();
-    refresh_question_hint();
-    app_ui_post_toast("已录入，可继续选择", false);
+    // 不再弹"已录入…"的 toast：结果页本身就是反馈，操作提示已在页脚常驻。
+}
+
+/** 识别失败（voice.error）：LVGL 任务里把语音页从"识别中…"复原。 */
+void app_screens_question_voice_failed(void)
+{
+    s_q_voice_failed_dirty = true;
+    // 空闲 PTT 的录音页同样要收起（结果不会来了）；追问页由上面的标志复原。
+    s_ptt_show = false;
+    s_ptt_dirty = true;
+}
+
+/** 消费识别失败标志（只在 LVGL 任务里调用）。 */
+static void consume_q_voice_failed(void)
+{
+    if (!s_q_voice_failed_dirty) return;
+    s_q_voice_failed_dirty = false;
+    if (s_current != AP_SCREEN_Q_VOICE) return;
+    if (s_qvoice_text) {
+        lv_label_set_text(s_qvoice_text, "按住确定说话");
+        lv_obj_set_style_text_color(s_qvoice_text, lv_color_hex(UI_FG), 0);
+    }
+    if (s_qvoice_hint) lv_label_set_text(s_qvoice_hint,
+                                        "上键返回");
 }
 
 // ── 审批页 ────────────────────────────────────────────────────────────────
@@ -1398,6 +1670,34 @@ bool app_screens_handle_key(int btn, int event)
 {
     if (s_current == AP_SCREEN_NONE) return false;
 
+    // ── 空闲 PTT 录音页：纯展示，**不能消费按键** ──────────────────────────
+    //   确定键的按下/松开必须穿透到 app.c（它持有 PTT 状态机）。
+    //   若这里 return true，松手会被吃掉 → app_voice_stop 永远不被调用 →
+    //   录音一路录到 30s 上限（真机上是"松手了还在录"的经典缺陷）。
+    if (s_current == AP_SCREEN_PTT) return false;
+
+    // ── 「其他」识别结果页：确定作答 / 上键重录 / 下键滚动 ──────────────────
+    if (s_current == AP_SCREEN_Q_RESULT) {
+        if (btn == APP_UI_BTN_UP && (event == APP_UI_EV_CLICK || event == APP_UI_EV_LONG)) {
+            show_qvoice();   // 回语音页（文本保留，可长按确定重录）
+            return true;
+        }
+        // ★ 下键 = **翻页**（用户 11-09 要求）：翻到最后一页后再按回到首页。
+        if (btn == APP_UI_BTN_DOWN && event == APP_UI_EV_CLICK) {
+            page_down_box(s_qres_box);
+            return true;
+        }
+        if (btn == APP_UI_BTN_OK && event == APP_UI_EV_CLICK) {
+            fill_qvoice();     // 短按 = 填入（不提交）
+            return true;
+        }
+        if (btn == APP_UI_BTN_OK && event == APP_UI_EV_LONG) {
+            commit_qvoice();   // 长按 = 提交（发送）
+            return true;
+        }
+        return true;
+    }
+
     // ── 余额页：任意"确定"返回主页 ────────────────────────────────────────
     //
     // ★ 这里修过一个真实缺陷：原先只有审批页消费按键，余额页直接 return false
@@ -1427,14 +1727,9 @@ bool app_screens_handle_key(int btn, int event)
             ESP_LOGI(TAG, "识别结果卡：删除并返回（上键，已作废）");
             return true;
         }
+        // ★ 下键 = **翻页**（用户 11-09 要求）：翻到最后一页后再按回到首页。
         if (btn == APP_UI_BTN_DOWN && event == APP_UI_EV_CLICK) {
-            lv_obj_scroll_by(s_voice_box, 0, -UI_TEXT_PITCH_CJK * 2, LV_ANIM_ON);
-            s_voice_deadline_ms = now_ms() + VOICE_CARD_TTL_MS;
-            return true;
-        }
-        if (btn == APP_UI_BTN_DOWN && event == APP_UI_EV_LONG) {
-            // 长按下键 = 向上滚动（上键让给了"删除返回"）
-            lv_obj_scroll_by(s_voice_box, 0, UI_TEXT_PITCH_CJK * 2, LV_ANIM_ON);
+            page_down_box(s_voice_box);
             s_voice_deadline_ms = now_ms() + VOICE_CARD_TTL_MS;
             return true;
         }
@@ -1560,6 +1855,62 @@ void app_screens_post_voice_result(const char *result_id, const char *text)
     s_voice_dirty = true;
 }
 
+// ── 空闲 PTT 的录音页（与「其他」语音页同款视觉）──────────────────────────
+//
+// 调用方是 app.c 的主页按住/松开分支（app 任务，持 LVGL 锁），这里只置标志，
+// 真正的显示/收起在 LVGL 任务里的 consume/tick 完成 —— 与其它 post_* 同一套模式。
+void app_screens_post_ptt_voice(bool recording)
+{
+    s_ptt_show = true;
+    s_ptt_recognizing = !recording;
+    s_ptt_dirty = true;
+}
+
+void app_screens_hide_ptt_voice(void)
+{
+    s_ptt_show = false;
+    s_ptt_dirty = true;
+}
+
+/** 录音页兜底：识别结果/错误都没来（短按被主机丢弃、链路断开）时也要收起。 */
+void app_screens_tick_ptt(uint32_t now)
+{
+    if (s_current != AP_SCREEN_PTT) return;
+    if (s_ptt_show && (int32_t)(now - s_ptt_deadline_ms) >= 0) {
+        ESP_LOGI(TAG, "录音页超时收起（未收到识别结果）");
+        s_ptt_show = false;
+        app_screens_hide(AP_SCREEN_PTT);
+    }
+}
+
+/** 落地录音页的显示/文案/收起（只在 LVGL 任务里调用）。 */
+static void consume_ptt_voice(void)
+{
+    if (!s_ptt_dirty) return;
+    s_ptt_dirty = false;
+
+    if (!s_ptt_show) {
+        if (s_current == AP_SCREEN_PTT) app_screens_hide(AP_SCREEN_PTT);
+        return;
+    }
+    // 只在主页上弹：追问/审批/结果卡正在显示时不抢屏（用户正在处理别的页面）
+    if (s_current != AP_SCREEN_NONE && s_current != AP_SCREEN_PTT) {
+        s_ptt_show = false;
+        return;
+    }
+    if (s_current != AP_SCREEN_PTT) show_panel(AP_SCREEN_PTT);
+    if (s_ptt_text) {
+        lv_label_set_text(s_ptt_text, s_ptt_recognizing ? "识别中…" : "正在录音…");
+        lv_obj_set_style_text_color(s_ptt_text,
+                                    lv_color_hex(s_ptt_recognizing ? UI_DIM : UI_WARN), 0);
+    }
+    if (s_ptt_hint) {
+        lv_label_set_text(s_ptt_hint, s_ptt_recognizing ? "识别中，请稍候" : "松手结束");
+    }
+    // 录音页最长 35s（固件上限 30s + 余量）；识别页 10s（主机转写通常 1~5s）
+    s_ptt_deadline_ms = now_ms() + (s_ptt_recognizing ? 10000u : 35000u);
+}
+
 void app_screens_post_question(const ap_question_msg_t *q)
 {
     if (!q) return;
@@ -1614,12 +1965,12 @@ void app_screens_consume_pending(void)
     if (s_q_done_dirty) {
         s_q_done_dirty = false;
         const bool q_open = (s_current == AP_SCREEN_QUESTION || s_current == AP_SCREEN_PLAN ||
-                             s_current == AP_SCREEN_Q_VOICE);
+                             s_current == AP_SCREEN_Q_VOICE || s_current == AP_SCREEN_Q_RESULT);
         if (q_open && strcmp(s_post_q_done.call_id, s_q.call_id) == 0) {
             if (s_post_q_done.ok) {
                 q_finish("已提交", false);
             } else if (strcmp(s_post_q_done.reason, "timeout") == 0) {
-                q_finish("已超时，请到电脑上继续", false);
+                q_finish("已超时，请在电脑端操作", false);
             } else {
                 q_finish("问题已结束", false);
             }
@@ -1631,6 +1982,9 @@ void app_screens_consume_pending(void)
         s_q_dirty = false;
         show_question(&s_post_q);
     }
+
+    // 空闲 PTT 录音页：先落地显示，随后的识别结果卡会把它顶掉（show_panel 单覆盖层）。
+    consume_ptt_voice();
 
     // 识别结果卡：审批/追问之后、余额之前。
     // ★ 更高的覆盖页显示期间**不抢屏**：留着脏标志，等它们收起后的下一轮再弹。

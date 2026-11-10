@@ -12,6 +12,7 @@ static const char *KEY_SCREEN_OFF = "scr_off";
 static const char *KEY_BRIGHT = "bright";
 static const char *KEY_AUTO_OFF = "auto_off";
 static const char *KEY_ALERT_VOL = "alert_vol";
+static const char *KEY_SOUND = "key_snd";
 static const char *KEY_POWERED_OFF = "pwr_off";
 
 static ap_settings_t s_settings = {
@@ -19,6 +20,7 @@ static ap_settings_t s_settings = {
     .brightness = AP_SETTINGS_DEFAULT_BRIGHTNESS,
     .auto_off_min = AP_SETTINGS_DEFAULT_AUTO_OFF_MIN,
     .alert_volume = AP_SETTINGS_DEFAULT_ALERT_VOLUME,
+    .key_sound = AP_SETTINGS_DEFAULT_KEY_SOUND,
 };
 static bool s_loaded = false;
 static bool s_powered_off = false;
@@ -54,6 +56,7 @@ esp_err_t ap_settings_init(void)
     s_settings.brightness = read_int(handle, KEY_BRIGHT, s_settings.brightness);
     s_settings.auto_off_min = read_int(handle, KEY_AUTO_OFF, s_settings.auto_off_min);
     s_settings.alert_volume = read_int(handle, KEY_ALERT_VOL, s_settings.alert_volume);
+    s_settings.key_sound = read_int(handle, KEY_SOUND, s_settings.key_sound);
     nvs_close(handle);
 
     // 存过野值（表外）时归一，避免出现"设置页显示不出来的档位"
@@ -69,6 +72,9 @@ esp_err_t ap_settings_init(void)
     s_settings.alert_volume =
         ap_settings_item(AP_SETTINGS_ALERT_VOLUME)
             ->values[ap_settings_index_of(ap_settings_item(AP_SETTINGS_ALERT_VOLUME), s_settings.alert_volume)];
+    s_settings.key_sound =
+        ap_settings_item(AP_SETTINGS_KEY_SOUND)
+            ->values[ap_settings_index_of(ap_settings_item(AP_SETTINGS_KEY_SOUND), s_settings.key_sound)];
 
     s_loaded = true;
     ESP_LOGI(TAG, "设置已加载：熄屏=%d 分钟（0=常亮）亮度=%d%% 自动休眠=%d 分钟（0=不休眠）提示音量=%d%%",
@@ -125,6 +131,10 @@ esp_err_t ap_settings_set_value(ap_settings_item_t item, int value)
     case AP_SETTINGS_ALERT_VOLUME:
         slot = &s_settings.alert_volume;
         key = KEY_ALERT_VOL;
+        break;
+    case AP_SETTINGS_KEY_SOUND:
+        slot = &s_settings.key_sound;
+        key = KEY_SOUND;
         break;
     default:
         return ESP_ERR_INVALID_ARG;
